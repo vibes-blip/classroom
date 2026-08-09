@@ -3,7 +3,8 @@ import { io } from 'socket.io-client';
 import { createClassroomRecord, joinClassroomRecord } from './classroomState';
 import { connectLiveKit, getLiveKitToken } from './livekitClient';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE;
 import {
   BookOpen, Users, Award, Calendar, DollarSign, Settings, Bell, MessageSquare,
   Video, FileText, CheckCircle, Shield, Search, Menu, X, Play, ArrowRight,
@@ -64,8 +65,8 @@ export default function App() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/classrooms').then(res => res.json()),
-      fetch('/api/analytics/dashboard').then(res => res.json()),
+      fetch(`${API_BASE}/api/classrooms`).then(res => res.json()),
+      fetch(`${API_BASE}/api/analytics/dashboard`).then(res => res.json()),
     ]).then(([classrooms, metrics]) => {
       setState(prev => ({ ...prev, classrooms }));
       setDashboardMetrics(metrics);
@@ -101,6 +102,46 @@ export default function App() {
               EduVerse
             </span>
           </div>
+
+          {/* Pending requests (teacher view) */}
+          {state.currentUser?.role === 'teacher' && (
+            <div className="relative">
+              <button
+                onClick={() => { setPendingRequestsOpen(!pendingRequestsOpen); setNotificationsOpen(false); setAddParticipantOpen(false); setFeaturesOpen(false); }}
+                className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition relative"
+                title="Pending student requests"
+              >
+                <UserPlus className="h-4 w-4" />
+                {pendingRequests.length > 0 && (
+                  <span className="absolute -top-1 -right-1 text-[10px] bg-pink-500 text-white rounded-full px-1">{pendingRequests.length}</span>
+                )}
+              </button>
+              {pendingRequestsOpen && (
+                <div className="absolute right-0 mt-3 w-64 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-4 z-50 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-white border-b border-slate-800 pb-2">
+                    <span>Pending Requests</span>
+                    <button onClick={() => setPendingRequestsOpen(false)} className="text-slate-400 hover:text-white"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    {pendingRequests.length ? pendingRequests.map(req => (
+                      <div key={req.id} className="bg-slate-800 p-2.5 rounded-xl text-slate-300 flex items-center justify-between">
+                        <div>
+                          <div className="font-bold text-white">{req.user}</div>
+                          <div className="text-[11px] text-slate-400">requests {req.type}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => approveRequest(req)} className="px-3 py-1 rounded-xl bg-emerald-600 text-white text-xs">Accept</button>
+                          <button onClick={() => setPendingRequests(prev => prev.filter(r => r.id !== req.id))} className="px-2 py-1 rounded-xl bg-slate-700 text-slate-200 text-xs">Dismiss</button>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="text-slate-400">No pending requests</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <nav className="hidden md:flex items-center space-x-8 text-sm font-medium text-slate-300">
             {['home', 'courses', 'teachers', 'permissions', 'pricing', 'about', 'contact'].map(tab => (
@@ -183,8 +224,8 @@ export default function App() {
         {state.activeTab === 'register' && <AuthView type="register" navigateTo={navigateTo} setState={setState} />}
         {state.activeTab === 'student-dash' && <StudentDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'teacher-dash' && <TeacherDashboard navigateTo={navigateTo} state={state} setState={setState} />}
-        {state.activeTab === 'admin-dash' && <AdminDashboard metrics={dashboardMetrics} />}
-        {state.activeTab === 'classroom' && <VirtualClassroom navigateTo={navigateTo} state={state} setState={setState} socketRef={socketRef} />}
+        {state.activeTab === 'admin-dash' && <AdminDashboard metrics={dashboardMetrics} state={state} />}
+        {state.activeTab === 'classroom' && <LiveClassroom navigateTo={navigateTo} state={state} setState={setState} socketRef={socketRef} />}
       </main>
 
       {/* AI Tutor Widget */}
@@ -273,7 +314,7 @@ export default function App() {
               <span className="text-xl font-black text-white">EduVerse</span>
             </div>
             <p className="text-xs text-slate-400">
-              Next-generation virtual academy with live classrooms, AI tutoring, and accredited certificates.
+              Next-generation live academy with real classrooms, AI tutoring, and accredited certificates.
             </p>
           </div>
           <div>
@@ -282,7 +323,7 @@ export default function App() {
               <li><button onClick={() => navigateTo('courses')} className="hover:text-white transition">Browse Courses</button></li>
               <li><button onClick={() => navigateTo('teachers')} className="hover:text-white transition">Expert Faculty (Mr Abu)</button></li>
               <li><button onClick={() => navigateTo('pricing')} className="hover:text-white transition">Pricing & Plans</button></li>
-              <li><button onClick={() => navigateTo('classroom')} className="hover:text-white transition text-indigo-400 font-medium">Virtual Classroom</button></li>
+              <li><button onClick={() => navigateTo('classroom')} className="hover:text-white transition text-indigo-400 font-medium">Live Classroom</button></li>
             </ul>
           </div>
           <div>
@@ -319,12 +360,12 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
   const [requestDetails, setRequestDetails] = useState('');
   const [requestSubmitted, setRequestSubmitted] = useState(false);
 
-  const liveRoom = classrooms.find(room => room.live && room.status.toLowerCase().includes('live'));
-  const upcomingRoom = classrooms.find(room => !room.live || room.status.toLowerCase().includes('scheduled'));
-  const featuredRoom = liveRoom || upcomingRoom || null;
+  const liveRoom = classrooms.find(room => (room.live || room.status?.toLowerCase().includes('live')));
+  const upcomingRoom = classrooms.find(room => !room.live && room.status?.toLowerCase().includes('scheduled'));
+  const featuredRoom = liveRoom;
   const hasLiveRoom = Boolean(liveRoom);
   const hasUpcomingRoom = Boolean(upcomingRoom);
-  const noSchedule = !hasLiveRoom && !hasUpcomingRoom;
+  const noSchedule = !hasLiveRoom;
 
   const stats = [
     { value: dashboardMetrics?.students ? dashboardMetrics.students.toLocaleString() : null, label: 'Active Students' },
@@ -339,16 +380,21 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
       return;
     }
 
+    if (!room.live && !room.status?.toLowerCase().includes('live')) {
+      alert('This class is not live yet. Please join a live session or request a teacher.');
+      return;
+    }
+
     if (room.accessMode === 'link' && !joinCode.trim()) {
       alert('This classroom is join-by-link only. Please enter the join code or use the invitation link.');
       return;
     }
 
     try {
-      const response = await fetch(`/api/classrooms/${room.id}/join`, {
+      const response = await fetch(`${API_BASE}/api/classrooms/${room.id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ joinCode: joinCode.trim() }),
+        body: JSON.stringify({ joinCode: joinCode.trim(), user: state.currentUser.name }),
       });
       const updatedRoom = await response.json();
       if (!response.ok) {
@@ -367,7 +413,11 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
   };
 
   const requestTeacher = async () => {
-    if (!requestTopic.trim()) return;
+    if (!requestTopic.trim()) {
+      alert('Please enter the learning topic so we can assign the right teacher.');
+      return;
+    }
+
     const payload = {
       title: requestTopic.trim(),
       teacher: 'Requested Teacher',
@@ -381,7 +431,7 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
     };
 
     try {
-      const response = await fetch('/api/classrooms', {
+      const response = await fetch(`${API_BASE}/api/classrooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -389,12 +439,18 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
       const newRoom = response.ok ? await response.json() : createClassroomRecord(payload);
       setState(prev => ({ ...prev, classrooms: [newRoom, ...prev.classrooms] }));
       setRequestSubmitted(true);
+      setRequestTopic('');
+      setRequestTime('');
+      setRequestDetails('');
       setBookingOpen(false);
       navigateTo('home');
     } catch {
       const newRoom = createClassroomRecord(payload);
       setState(prev => ({ ...prev, classrooms: [newRoom, ...prev.classrooms] }));
       setRequestSubmitted(true);
+      setRequestTopic('');
+      setRequestTime('');
+      setRequestDetails('');
       setBookingOpen(false);
       navigateTo('home');
     }
@@ -408,16 +464,26 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center space-y-8">
           <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-semibold">
             <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-            <span>Next-Gen AI Powered Virtual Academy</span>
+            <span>Next-Gen AI Powered Live Academy</span>
           </div>
           <h1 className="text-4xl sm:text-6xl lg:text-7xl font-black text-white tracking-tight max-w-4xl mx-auto leading-tight">
             Learn Anywhere, Anytime with <span className="bg-gradient-to-r from-indigo-400 via-violet-400 to-pink-400 bg-clip-text text-transparent">Expert Instructors</span>
           </h1>
           <p className="text-base sm:text-lg text-slate-400 max-w-2xl mx-auto">
-            HD live virtual classrooms, interactive whiteboards, instant AI tutoring, and accredited certificates — all in one platform.
+            HD live classrooms, interactive whiteboards, instant AI tutoring, and accredited certificates — all in one platform.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
-            <button onClick={() => navigateTo('courses')} className="px-8 py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold shadow-xl shadow-indigo-600/30 flex items-center space-x-2 transition transform hover:-translate-y-0.5 group">
+            <button
+              onClick={() => {
+                if (liveRoom) {
+                  joinRoom(liveRoom);
+                } else {
+                  setRequestSubmitted(false);
+                  setBookingOpen(true);
+                }
+              }}
+              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold shadow-xl shadow-indigo-600/30 flex items-center space-x-2 transition transform hover:-translate-y-0.5 group"
+            >
               <span>Start Learning Now</span>
               <ArrowRight className="h-5 w-5 transition-transform group-hover:translate-x-1" />
             </button>
@@ -437,9 +503,16 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
               className="px-8 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold border border-slate-700 flex items-center space-x-2 transition"
             >
               <Video className="h-5 w-5 text-pink-400" />
-              <span>{noSchedule ? 'Book a Teacher' : featuredRoom ? `Join ${featuredRoom.teacher}'s Live Room` : 'Join Class'}</span>
+              <span>{noSchedule ? 'Request a Teacher' : featuredRoom ? `Join ${featuredRoom.teacher}'s Live Classroom` : 'Join Live Classroom'}</span>
             </button>
           </div>
+
+          {requestSubmitted && (
+            <div className="mx-auto mt-8 max-w-3xl rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-5 text-emerald-100">
+              <div className="font-semibold">Teacher request received</div>
+              <p className="mt-2 text-sm text-emerald-200">Your request has been sent to our live scheduling team. We’ll notify you when a teacher is assigned and the class is ready.</p>
+            </div>
+          )}
 
           {stats.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6 pt-12 max-w-4xl mx-auto">
@@ -464,7 +537,7 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
               </div>
               <h2 className="text-3xl font-black text-white">Teacher not available right now</h2>
               <p className="text-sm text-slate-400 max-w-xl">Fill in the learning goal and preferred time, and we’ll schedule a live session with an expert teacher as soon as possible.</p>
-              <button onClick={() => setBookingOpen(true)} className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500">
+              <button onClick={() => { setRequestSubmitted(false); setBookingOpen(true); }} className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500">
                 <Brain className="h-4 w-4" />
                 Request a Live Teacher
               </button>
@@ -517,7 +590,13 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
               <textarea value={requestDetails} onChange={e => setRequestDetails(e.target.value)} placeholder="What do you want to learn? What should the teacher prepare?" className="w-full min-h-[140px] rounded-3xl border border-slate-700 bg-slate-950 px-4 py-4 text-sm text-white focus:outline-none focus:border-indigo-500" />
             </label>
             <div className="mt-6 flex flex-wrap gap-3 items-center">
-              <button onClick={requestTeacher} className="rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500 transition">Submit Request</button>
+              <button
+                onClick={requestTeacher}
+                disabled={!requestTopic.trim()}
+                className="rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
+              >
+                Submit Request
+              </button>
               <span className="text-sm text-slate-400">We’ll push your request into the live schedule and notify you when the teacher is ready.</span>
             </div>
           </div>
@@ -577,14 +656,23 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="bg-gradient-to-r from-indigo-900/60 via-violet-900/60 to-slate-900 border border-indigo-500/30 rounded-3xl p-8 sm:p-12 relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="space-y-4 max-w-xl">
-            <span className="px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold border border-pink-500/30">Live Virtual Classrooms</span>
+            <span className="px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold border border-pink-500/30">Live Classrooms</span>
             <h2 className="text-3xl font-black text-white">Experience HD Live Lessons with Mr Abu</h2>
             <p className="text-sm text-slate-300">
               Real-time interactive whiteboards, breakout rooms, screen sharing, live polls and student video overlays.
             </p>
-            <button onClick={() => featuredRoom && joinRoom(featuredRoom)} className="px-6 py-3 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-sm shadow-lg shadow-pink-600/30 flex items-center space-x-2 transition">
+            <button
+              onClick={() => {
+                if (liveRoom) {
+                  joinRoom(liveRoom);
+                } else {
+                  setBookingOpen(true);
+                }
+              }}
+              className="px-6 py-3 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-sm shadow-lg shadow-pink-600/30 flex items-center space-x-2 transition"
+            >
               <Video className="h-4 w-4" />
-              <span>{featuredRoom ? `Enter ${featuredRoom.teacher}'s Virtual Classroom` : `Enter Virtual Classroom`}</span>
+              <span>{liveRoom ? `Enter ${liveRoom.teacher}'s Live Classroom` : 'Request a Live Teacher'}</span>
             </button>
           </div>
           <div className="w-full md:w-96 h-64 rounded-2xl bg-slate-950 border border-slate-800 p-4 flex flex-col justify-between shadow-2xl relative">
@@ -620,16 +708,21 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
       return;
     }
 
+    if (!room.live && !room.status?.toLowerCase().includes('live')) {
+      alert('This class is not live yet. Please join a live session or request a teacher.');
+      return;
+    }
+
     if (room.accessMode === 'link' && !joinCode.trim()) {
       alert('This classroom is join-by-link only. Please enter the join code or use the invitation link.');
       return;
     }
 
     try {
-      const response = await fetch(`/api/classrooms/${room.id}/join`, {
+      const response = await fetch(`${API_BASE}/api/classrooms/${room.id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ joinCode: joinCode.trim() }),
+        body: JSON.stringify({ joinCode: joinCode.trim(), user: state.currentUser.name }),
       });
       const updatedRoom = await response.json();
       if (!response.ok) {
@@ -661,7 +754,7 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-black text-white">Explore Professional Courses</h1>
-          <p className="text-sm text-slate-400 mt-1">Advance your career with certified courses and live virtual classes</p>
+          <p className="text-sm text-slate-400 mt-1">Advance your career with certified courses and live classes</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {['All', 'Languages', 'Web Development', 'AI', 'Design', 'Finance', 'Computer Science'].map(cat => (
@@ -1003,7 +1096,7 @@ function StudentDashboard({ navigateTo, state, setState }) {
   ]);
 
   useEffect(() => {
-    fetch('/api/assignments')
+    fetch(`${API_BASE}/api/assignments`)
       .then(res => res.json())
       .then(data => setAssignments(data.map(item => ({ score: item.score ?? '-', ...item })) ))
       .catch(() => {});
@@ -1056,7 +1149,15 @@ function StudentDashboard({ navigateTo, state, setState }) {
         </div>
 
         <div className="flex flex-wrap gap-3">
-          <button onClick={() => navigateTo('classroom')} className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-500">
+          <button onClick={() => {
+            const liveRoom = state.classrooms.find(room => room.live || room.status.toLowerCase().includes('live'));
+            if (liveRoom) {
+              setState(prev => ({ ...prev, activeClassroom: liveRoom.id }));
+              navigateTo('classroom');
+            } else {
+              alert('No live class is available right now. Please request a teacher or check back later.');
+            }
+          }} className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-500">
             <Video className="h-4 w-4" />
             Join Live Class
           </button>
@@ -1158,6 +1259,10 @@ function StudentDashboard({ navigateTo, state, setState }) {
                     <button onClick={() => {
                       const classroom = state.classrooms.find(item => item.title === course.title);
                       if (!classroom) return;
+                      if (!classroom.live && !classroom.status?.toLowerCase().includes('live')) {
+                        alert('This class is not currently live. Please join a live session or request a teacher.');
+                        return;
+                      }
                       setState(prev => ({
                         ...prev,
                         activeClassroom: classroom.id,
@@ -1186,6 +1291,10 @@ function StudentDashboard({ navigateTo, state, setState }) {
                   <p className="mt-4 text-sm text-slate-400">{room.description}</p>
                   <div className="mt-6 flex items-center justify-between flex-wrap gap-3">
                     <button onClick={() => {
+                      if (!room.live && !room.status?.toLowerCase().includes('live')) {
+                        alert('This class is not currently live. Please join a live session or request a teacher.');
+                        return;
+                      }
                       setState(prev => ({
                         ...prev,
                         activeClassroom: room.id,
@@ -1320,7 +1429,7 @@ function TeacherDashboard({ navigateTo, state, setState }) {
     };
 
     try {
-      const response = await fetch('/api/classrooms', {
+      const response = await fetch(`${API_BASE}/api/classrooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1646,15 +1755,21 @@ function TeacherDashboard({ navigateTo, state, setState }) {
 }
 
 /* ==================== ADMIN DASHBOARD ==================== */
-function AdminDashboard({ metrics }) {
+function AdminDashboard({ metrics, state }) {
+  const activeClassrooms = state?.classrooms || [];
+  const liveRooms = activeClassrooms.filter(room => room.live || room.status?.toLowerCase().includes('live'));
+  const totalStudents = activeClassrooms.reduce((sum, room) => sum + (room.attendees || 0), 0);
+  const totalTeachers = new Set(activeClassrooms.map(room => room.teacher)).size;
+  const recentEvents = state?.notifications?.slice(0, 4) || [];
+
   const cards = [
-    { label: 'Total Students', value: metrics?.students != null ? metrics.students.toLocaleString() : '-' },
-    { label: 'Active Teachers', value: metrics?.teachers != null ? metrics.teachers.toLocaleString() : '-' },
+    { label: 'Total Students', value: totalStudents.toLocaleString() },
+    { label: 'Active Teachers', value: totalTeachers.toLocaleString() },
     { label: 'Revenue', value: metrics?.revenue != null ? `$${metrics.revenue.toLocaleString()}` : '-' },
-    { label: 'Active Live Classes', value: metrics?.liveClasses != null ? metrics.liveClasses.toLocaleString() : '-' },
-    { label: 'Pending Approvals', value: metrics?.pendingApprovals != null ? metrics.pendingApprovals.toLocaleString() : '-' },
+    { label: 'Active Live Classes', value: liveRooms.length.toLocaleString() },
+    { label: 'Total Classrooms', value: activeClassrooms.length.toLocaleString() },
     { label: 'Attendance', value: metrics?.attendance != null ? `${metrics.attendance}%` : '-' },
-    { label: 'Payments', value: metrics?.payments != null ? metrics.payments.toLocaleString() : '-' },
+    { label: 'Pending Approvals', value: metrics?.pendingApprovals != null ? metrics.pendingApprovals.toLocaleString() : '0' },
   ];
 
   return (
@@ -1663,7 +1778,7 @@ function AdminDashboard({ metrics }) {
         <div>
           <span className="px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold">System Administration</span>
           <h1 className="text-2xl font-black text-white mt-2">Admin Control Center</h1>
-          <p className="text-xs text-slate-300">Manage users, faculty (including Mr Abu), courses, payouts and system health</p>
+          <p className="text-xs text-slate-300">Manage live classrooms, teacher approvals, student joins, and real session records.</p>
         </div>
         <div className="flex space-x-3">
           <button className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700">System Logs</button>
@@ -1680,35 +1795,67 @@ function AdminDashboard({ metrics }) {
         ))}
       </div>
 
-      <div className="bg-slate-800/60 border border-slate-700/60 p-8 rounded-3xl space-y-6">
-        <h3 className="font-bold text-white text-lg">Recent System Transactions</h3>
-        <div className="space-y-3">
-          {[
-            { user: 'Alex Johnson', action: 'Purchased Pro Scholar Subscription', amount: '$29.00', time: '12m ago', status: 'Success' },
-            { user: 'Mr Abu', action: 'Teacher Payout Requested', amount: '$2,450.00', time: '2h ago', status: 'Approved' },
-            { user: 'David Miller', action: 'New Course Published', amount: '-', time: '5h ago', status: 'Active' },
-          ].map((tx, idx) => (
-            <div key={idx} className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center justify-between text-xs">
-              <div>
-                <div className="font-bold text-white">{tx.user} · <span className="text-indigo-400">{tx.action}</span></div>
-                <div className="text-[10px] text-slate-400">{tx.time}</div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-slate-800/60 border border-slate-700/60 p-8 rounded-3xl">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-bold text-white text-lg">Live Classroom Sessions</h3>
+            <span className="text-xs text-slate-400">{liveRooms.length} currently live</span>
+          </div>
+          <div className="space-y-4">
+            {activeClassrooms.length > 0 ? activeClassrooms.map((room) => (
+              <div key={room.id} className="bg-slate-900 border border-slate-800 p-4 rounded-3xl">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="font-bold text-white">{room.title}</div>
+                    <div className="text-[11px] text-slate-400 mt-1">{room.teacher} · {room.subject}</div>
+                  </div>
+                  <div className="text-right text-[11px] text-slate-400">
+                    <div className="font-semibold text-white">{room.attendees ?? 0} students</div>
+                    <div className="mt-1">{room.status}</div>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2 text-[10px] text-slate-300">
+                  <span className="rounded-full bg-slate-700 px-2 py-1">{room.accessMode || 'public'}</span>
+                  <span className="rounded-full bg-slate-700 px-2 py-1">{room.joinCode || 'open'}</span>
+                </div>
               </div>
-              <div className="flex items-center space-x-4">
-                <span className="font-bold text-white">{tx.amount}</span>
-                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-green-500/20 text-green-300">{tx.status}</span>
+            )) : (
+              <div className="text-slate-400">No classrooms are active yet. Live sessions will appear here once students join real rooms.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-slate-800/60 border border-slate-700/60 p-8 rounded-3xl">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-bold text-white text-lg">Recent Admin Events</h3>
+            <span className="text-xs text-slate-400">Tracked live actions</span>
+          </div>
+          <div className="space-y-3 text-sm text-slate-300">
+            {recentEvents.length > 0 ? recentEvents.map((event, idx) => (
+              <div key={idx} className="bg-slate-900 border border-slate-800 rounded-3xl p-4">
+                <div className="font-semibold text-white">{event.text}</div>
+                <div className="text-[10px] text-slate-500 mt-1">{event.time}</div>
               </div>
-            </div>
-          ))}
+            )) : (
+              <div className="text-slate-400">No recent admin notifications. Real joins and classroom updates will appear here.</div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-/* ==================== VIRTUAL CLASSROOM ==================== */
-function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
+/* ==================== LIVE CLASSROOM ==================== */
+function LiveClassroom({ navigateTo, state, setState, socketRef }) {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [pendingRequestsOpen, setPendingRequestsOpen] = useState(false);
+  const [requestSentPopup, setRequestSentPopup] = useState(false);
+  const [chatScrollHidden, setChatScrollHidden] = useState(false);
+  const [viewSeconds, setViewSeconds] = useState(0);
+  const [fullScreenMode, setFullScreenMode] = useState(false);
   const [teacherFlowStep, setTeacherFlowStep] = useState('idle');
   const [studentFlowStep, setStudentFlowStep] = useState('idle');
   const [screenShare, setScreenShare] = useState(false);
@@ -1716,6 +1863,7 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const [chatOpen, setChatOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [waitingApproval, setWaitingApproval] = useState(false);
+  const [cameraApproved, setCameraApproved] = useState(false);
   const [addParticipantOpen, setAddParticipantOpen] = useState(false);
   const [featuresOpen, setFeaturesOpen] = useState(false);
   const [newStudentEmail, setNewStudentEmail] = useState('');
@@ -1748,8 +1896,12 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const liveKitVideoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  const handleConnectLiveKit = async (publishLocalTracks = true) => {
+  const handleConnectLiveKit = async (publishLocalTracks = false) => {
     if (!classroom || !state.currentUser) return;
+    if (publishLocalTracks && state.currentUser.role !== 'teacher') {
+      setLiveKitError('Request teacher approval before enabling your camera.');
+      return;
+    }
     setConnectingLiveKit(true);
     setLiveKitError('');
 
@@ -1794,10 +1946,29 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
       setTeacherFlowStep('livekit-connection');
       await handleConnectLiveKit(true);
       setTeacherFlowStep('teacher-live');
+      // Notify students that class has started
+      try {
+        socketRef.current?.emit('classStarted', { roomId: classroom?.id, teacher: state.currentUser?.name });
+      } catch (err) {}
     } catch (err) {
       console.error('Teacher flow error', err);
       setLiveKitError(err?.message || 'Permission denied or LiveKit connect failed.');
       setTeacherFlowStep('idle');
+    }
+  };
+
+  const publishStudentMedia = async () => {
+    if (!liveKitRoom || !state.currentUser) return;
+    try {
+      const { createLocalVideoTrack, createLocalAudioTrack } = await import('livekit-client');
+      const videoTrack = await createLocalVideoTrack();
+      const audioTrack = await createLocalAudioTrack();
+      await liveKitRoom.localParticipant.publishTrack(videoTrack);
+      await liveKitRoom.localParticipant.publishTrack(audioTrack);
+      setCameraApproved(true);
+    } catch (err) {
+      console.error('Student publish media error', err);
+      setLiveKitError(err?.message || 'Unable to enable your camera after approval.');
     }
   };
 
@@ -2025,7 +2196,7 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const classroomRecordings = classroom?.recordings || recordings;
 
   useEffect(() => {
-    fetch('/api/messages')
+    fetch(`${API_BASE}/api/messages`)
       .then(res => res.json())
       .then(data => setMessages(data))
       .catch(() => setMessages([]));
@@ -2111,18 +2282,15 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
     });
 
     socketRef.current.on('mediaRequest', (payload) => {
-      // Notify teacher of a pending media request
       if (!payload) return;
       const from = payload.from;
       const user = payload.user;
       const type = payload.type || 'camera';
-      // If current user is teacher, prompt to accept
+      // If teacher, queue the request so they can accept from the UI
       if (state.currentUser?.role === 'teacher') {
-        const accept = confirm(`${user} requests permission to enable ${type}. Accept?`);
-        if (accept) {
-          socketRef.current.emit('approveMedia', { to: from, type, roomId: classroom.id });
-        }
+        setPendingRequests(prev => [{ from, user, type, id: Date.now() }, ...prev]);
       }
+      // If student received acknowledgement of their request, nothing special here (UI handled locally)
     });
 
     socketRef.current.on('mediaApproved', async (payload) => {
@@ -2130,10 +2298,21 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
       const type = payload.type || 'camera';
       if (!state.currentUser) return;
       setWaitingApproval(false);
-      try {
-        await handleConnectLiveKit();
-      } catch (err) {
-        console.warn('LiveKit connect failed after approval', err);
+      if (type === 'camera') {
+        setCameraApproved(true);
+      }
+      if (liveKitRoom && type === 'camera') {
+        await publishStudentMedia();
+      }
+    });
+
+    // Listen for teacher starting the class
+    socketRef.current.on('classStarted', (payload) => {
+      if (!payload) return;
+      // students receive the notification and auto-enable camera preview (not publish)
+      if (state.currentUser?.role !== 'teacher') {
+        setCamOn(true);
+        setState(prev => ({ ...prev, notifications: [{ id: Date.now(), text: `${payload.teacher} started the class.`, time: 'Now', unread: true }, ...prev.notifications] }));
       }
     });
 
@@ -2324,7 +2503,7 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const sendChatMessage = async (text) => {
     if (!text.trim()) return;
     try {
-      const response = await fetch('/api/messages', {
+      const response = await fetch(`${API_BASE}/api/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: state.currentUser.name, text }),
@@ -2357,10 +2536,10 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
     }
 
     try {
-      const response = await fetch(`/api/classrooms/${classroom.id}/join`, {
+      const response = await fetch(`${API_BASE}/api/classrooms/${classroom.id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ joinCode: providedCode }),
+        body: JSON.stringify({ joinCode: providedCode, user: state.currentUser?.name }),
       });
       const updatedRoom = await response.json();
       if (!response.ok) {
@@ -2451,13 +2630,56 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   };
 
   const requestCameraOn = () => {
-    if (!classroom || !socketRef.current) return;
-    socketRef.current.emit('requestMedia', { roomId: classroom.id, type: 'camera' });
+    if (!classroom || !socketRef.current || !state.currentUser) return;
+    socketRef.current.emit('requestMedia', {
+      roomId: classroom.id,
+      type: 'camera',
+      user: state.currentUser.name || 'Student',
+      from: socketRef.current.id,
+    });
     setWaitingApproval(true);
+    setCameraApproved(false);
+    // show temporary confirmation to student
+    setRequestSentPopup(true);
+    setTimeout(() => setRequestSentPopup(false), 4000);
   };
+
+  const approveRequest = (req) => {
+    if (!socketRef?.current || !req) return;
+    socketRef.current.emit('approveMedia', { to: req.from, type: req.type || 'camera', roomId: classroom.id });
+    // remove from pending list
+    setPendingRequests(prev => prev.filter(r => r.id !== req.id));
+    // add a teacher-side notification
+    setState(prev => ({ ...prev, notifications: [{ id: Date.now(), text: `Approved ${req.user}'s ${req.type} request`, time: 'Now', unread: true }, ...prev.notifications] }));
+  };
+
+  // full-screen after 10 minutes of viewing
+  useEffect(() => {
+    if (!classroom || !state.currentUser) return;
+    const interval = setInterval(() => {
+      setViewSeconds(s => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [classroom, state.currentUser]);
+
+  useEffect(() => {
+    if (viewSeconds >= 600) {
+      setFullScreenMode(true);
+    }
+  }, [viewSeconds]);
 
   return (
     <div className="h-[calc(100vh-80px)] bg-slate-950 flex flex-col overflow-hidden relative">
+      {fullScreenMode && (
+        <button
+          onClick={() => { setFullScreenMode(false); setViewSeconds(0); }}
+          title="Exit full screen"
+          className="fixed top-4 right-4 z-50 p-2 rounded-xl bg-slate-900 text-white"
+        >Exit Full Screen</button>
+      )}
+      {requestSentPopup && (
+        <div className="fixed bottom-6 left-6 z-50 bg-emerald-600 text-white px-4 py-2 rounded-xl shadow-lg">Request sent to teacher</div>
+      )}
       {/* Top Bar */}
       <div className="bg-slate-900 border-b border-slate-800 px-6 py-3 flex items-center justify-between relative z-20">
         <div>
@@ -2667,6 +2889,7 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
         </div>
 
         {/* Classroom Recording Panel */}
+        {!fullScreenMode && (
         <div className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col">
           <div className="p-4 border-b border-slate-800 flex justify-between items-center">
             <div>
@@ -2692,9 +2915,10 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
             )}
           </div>
         </div>
+        )}
 
         {/* Chat Sidebar */}
-        {chatOpen && (
+        {chatOpen && !fullScreenMode && (
           <div className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col">
             <div className="p-4 border-b border-slate-800 flex justify-between items-center">
               <div>
@@ -2704,7 +2928,10 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
               <button onClick={() => setChatOpen(false)} className="text-slate-400 hover:text-white"><X className="h-4 w-4" /></button>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs">
-              {messages.map((m, i) => {
+              {chatScrollHidden ? (
+                <div className="text-center text-slate-500 py-10">Chat messages are hidden. Double-click the chat button to show messages.</div>
+              ) : (
+                messages.map((m, i) => {
                 const isMine = m.user === state.currentUser.name;
                 const userName = m.user === 'Mr Abu' ? 'Teacher' : m.user === state.currentUser.name ? 'You' : m.user;
                 const userAvatar = m.user === 'Mr Abu'
@@ -2737,7 +2964,8 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
                     )}
                   </div>
                 );
-              })}
+                })
+              )}
             </div>
             <div className="p-3 border-t border-slate-800 flex items-center gap-2">
               <button className="rounded-2xl bg-slate-800 border border-slate-700 p-3 text-slate-300 hover:bg-slate-700 transition" aria-label="Send emoji">
@@ -2774,6 +3002,7 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
       </div>
 
       {/* Bottom Controls */}
+      {!fullScreenMode && (
       <div className="bg-slate-900 border-t border-slate-800 py-3 px-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-center">
         {state.currentUser ? (
           <div className="flex flex-col sm:flex-row sm:items-center sm:gap-3">
@@ -2785,10 +3014,11 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
                   startTeacherFlow();
                 }
               }}
-              className="p-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white flex items-center space-x-2 text-xs font-semibold transition"
+              title={state.currentUser.role === 'student' ? 'Join class' : 'Start class'}
+              className="group relative p-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white transition"
             >
               <Video className="h-5 w-5" />
-              <span className="hidden sm:inline">{state.currentUser.role === 'student' ? 'Join Class' : 'Start Class'}</span>
+              <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{state.currentUser.role === 'student' ? 'Join class' : 'Start class'}</span>
             </button>
             <div className="rounded-2xl bg-slate-800 border border-slate-700 px-3 py-2 text-[10px] text-slate-300">
               {state.currentUser.role === 'student' ? (
@@ -2807,19 +3037,23 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
         )}
         <button
           onClick={() => setMicOn(!micOn)}
-          className={`p-3 rounded-2xl transition ${micOn ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-red-600 text-white'}`}
+          title={micOn ? 'Mute microphone' : 'Unmute microphone'}
+          className={`group relative p-3 rounded-2xl transition ${micOn ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-red-600 text-white'}`}
         >
           {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+          <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{micOn ? 'Mute mic' : 'Unmute mic'}</span>
         </button>
-        <button
-          onClick={handleConnectLiveKit}
-          disabled={connectingLiveKit || liveKitConnected}
-          className={`p-3 rounded-2xl flex items-center space-x-2 text-xs font-semibold transition ${liveKitConnected ? 'bg-green-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
-          title="Connect to LiveKit for camera and mic"
-        >
-          <Video className="h-5 w-5" />
-          <span className="hidden sm:inline">{connectingLiveKit ? 'Connecting...' : liveKitConnected ? 'LiveKit Connected' : 'Connect LiveKit'}</span>
-        </button>
+        {state.currentUser?.role === 'teacher' && (
+          <button
+            onClick={handleConnectLiveKit}
+            disabled={connectingLiveKit || liveKitConnected}
+            title={liveKitConnected ? 'LiveKit connected' : 'Connect LiveKit'}
+            className={`group relative p-3 rounded-2xl text-white transition ${liveKitConnected ? 'bg-green-600' : 'bg-slate-800 hover:bg-slate-700'}`}
+          >
+            <Video className="h-5 w-5" />
+            <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{connectingLiveKit ? 'Connecting...' : liveKitConnected ? 'LiveKit connected' : 'Connect LiveKit'}</span>
+          </button>
+        )}
         {state.currentUser?.role === 'teacher' && (
           <button
             onClick={() => {
@@ -2829,25 +3063,22 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
                 startRecording();
               }
             }}
-            className={`p-3 rounded-2xl flex items-center space-x-2 text-xs font-semibold transition ${isRecording ? 'bg-red-600 text-white' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
             title={isRecording ? 'Stop class recording' : 'Record this class'}
+            className={`group relative p-3 rounded-2xl transition ${isRecording ? 'bg-red-600 text-white' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
           >
             <Play className="h-5 w-5" />
-            <span className="hidden sm:inline">{isRecording ? 'Stop Recording' : 'Record Class'}</span>
+            <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{isRecording ? 'Stop recording' : 'Record class'}</span>
           </button>
         )}
-        {/* Students can request permission to enable camera/screen; teachers receive approval prompts */}
         {state.currentUser?.role !== 'teacher' && (
           <>
             <button
-              onClick={() => {
-                requestCameraOn();
-              }}
-              className={`p-3 rounded-2xl transition ${waitingApproval ? 'bg-yellow-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+              onClick={requestCameraOn}
               title="Request camera permission from teacher"
+              className={`group relative p-3 rounded-2xl transition ${waitingApproval ? 'bg-yellow-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             >
               <Camera className="h-5 w-5" />
-              <span className="hidden sm:inline">Request Camera</span>
+              <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">Request camera</span>
             </button>
             <button
               onClick={() => {
@@ -2855,11 +3086,11 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
                 socketRef.current.emit('requestMedia', { roomId: classroom.id, type: 'screen' });
                 setWaitingApproval(true);
               }}
-              className={`p-3 rounded-2xl transition ${waitingApproval ? 'bg-yellow-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
               title="Request screen share permission from teacher"
+              className={`group relative p-3 rounded-2xl transition ${waitingApproval ? 'bg-yellow-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             >
               <Monitor className="h-5 w-5" />
-              <span className="hidden sm:inline">Request Screen</span>
+              <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">Request screen</span>
             </button>
           </>
         )}
@@ -2872,11 +3103,11 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
               setCamOn(prev => !prev);
             }
           }}
-          className={`p-3 rounded-2xl transition ${camOn ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-red-600 text-white'}`}
-          title="Toggle teacher camera"
+          title="Toggle camera"
+          className={`group relative p-3 rounded-2xl transition ${camOn ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-red-600 text-white'}`}
         >
           {camOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
-          <span className="hidden sm:inline">{camOn ? 'Live Camera' : 'Camera Off'}</span>
+          <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{camOn ? 'Camera on' : 'Camera off'}</span>
         </button>
         <button
           onClick={() => {
@@ -2888,11 +3119,11 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
               setCamOn(false);
             }
           }}
-          className={`p-3 rounded-2xl flex items-center space-x-2 text-xs font-semibold transition ${screenShare ? 'bg-indigo-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
-          title="Start or stop screen sharing"
+          title="Toggle screen share"
+          className={`group relative p-3 rounded-2xl transition ${screenShare ? 'bg-indigo-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
         >
           <Monitor className="h-5 w-5" />
-          <span className="hidden sm:inline">{screenShare ? 'Sharing' : 'Share Screen'}</span>
+          <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">{screenShare ? 'Screen sharing' : 'Share screen'}</span>
         </button>
         <button
           onClick={() => setHandRaised(!handRaised)}
@@ -2902,13 +3133,23 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
           <span className="hidden sm:inline">{handRaised ? 'Hand Raised' : 'Raise Hand'}</span>
         </button>
         <button
-          onClick={() => setChatOpen(!chatOpen)}
-          className="p-3 bg-slate-800 hover:bg-slate-700 text-white rounded-2xl flex items-center space-x-2 text-xs font-semibold transition"
+          onClick={() => {
+            if (chatScrollHidden) {
+              setChatScrollHidden(false);
+              setChatOpen(true);
+            } else {
+              setChatOpen(prev => !prev);
+            }
+          }}
+          onDoubleClick={() => setChatScrollHidden(prev => !prev)}
+          title="Open classroom chat (double-click to hide messages)"
+          className="group relative p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white transition"
         >
           <MessageCircle className="h-5 w-5" />
-          <span className="hidden sm:inline">Chat</span>
+          <span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 rounded-2xl bg-slate-900 px-3 py-1 text-[10px] text-slate-200 shadow-xl transition-opacity duration-200 group-hover:block">Chat</span>
         </button>
       </div>
+      )}
 
       {whiteboardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">

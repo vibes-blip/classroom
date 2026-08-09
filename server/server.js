@@ -26,8 +26,8 @@ const classes = [
 ];
 
 const classrooms = [
-  { id: 'room-1', title: 'English Language & Advanced Grammar', username: 'Sarah Lin', teacher: 'Sarah Lin', subject: 'English', startsAt: 'Now', description: 'Live grammar workshop', attendees: 124, joinCode: 'ENG42', accessMode: 'public', status: 'Live now' },
-  { id: 'room-2', title: 'AI Neural Networks & Python', username: 'Marcus Sterling', teacher: 'Marcus Sterling', subject: 'AI', startsAt: 'Today · 2:00 PM', description: 'Hands-on machine learning lab', attendees: 84, joinCode: 'AI101', accessMode: 'link', status: 'Scheduled' },
+  { id: 'room-1', title: 'English Language & Advanced Grammar', username: 'Sarah Lin', teacher: 'Sarah Lin', subject: 'English', startsAt: 'Now', description: 'Live grammar workshop', attendees: 124, joinCode: 'ENG42', accessMode: 'public', status: 'Live now', participants: [{ id: 'p-1', user: 'Alex', joinedAt: new Date().toISOString(), role: 'student' }] },
+  { id: 'room-2', title: 'AI Neural Networks & Python', username: 'Marcus Sterling', teacher: 'Marcus Sterling', subject: 'AI', startsAt: 'Today · 2:00 PM', description: 'Hands-on machine learning lab', attendees: 84, joinCode: 'AI101', accessMode: 'link', status: 'Scheduled', participants: [] },
 ];
 
 const assignments = [
@@ -77,7 +77,13 @@ app.post('/api/classrooms/:id/join', (req, res) => {
     return res.status(403).json({ error: 'Join link or code required' });
   }
 
-  room.attendees += 1;
+  const user = req.body.user || 'Guest';
+  room.participants = room.participants || [];
+  const existingParticipant = room.participants.find(p => p.user === user);
+  if (!existingParticipant) {
+    room.participants.push({ id: `p-${Date.now()}`, user, joinedAt: new Date().toISOString(), role: 'student' });
+  }
+  room.attendees = room.participants.length;
   res.json(room);
 });
 app.get('/api/assignments', (_req, res) => res.json(assignments));

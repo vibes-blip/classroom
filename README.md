@@ -1,6 +1,6 @@
 # Classroom
 
-This project is a virtual classroom app with a real-time classroom experience.
+This project is a live classroom app with a real-time classroom experience.
 
 ## Architecture Overview
 

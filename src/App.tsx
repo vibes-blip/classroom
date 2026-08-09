@@ -1,7 +1,9 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { createClassroomRecord, joinClassroomRecord } from './classroomState';
-import { connectLiveKit } from './livekitClient';
+import { connectLiveKit, getLiveKitToken } from './livekitClient';
+
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_API_URL || 'http://localhost:4000';
 import {
   BookOpen, Users, Award, Calendar, DollarSign, Settings, Bell, MessageSquare,
   Video, FileText, CheckCircle, Shield, Search, Menu, X, Play, ArrowRight,
@@ -72,7 +74,7 @@ export default function App() {
 
   useEffect(() => {
     if (!socketRef.current) {
-      socketRef.current = io('http://localhost:4000');
+      socketRef.current = io(SOCKET_URL);
       socketRef.current.on('connect', () => {
         console.log('Socket connected', socketRef.current.id);
       });
@@ -1706,7 +1708,9 @@ function AdminDashboard({ metrics }) {
 /* ==================== VIRTUAL CLASSROOM ==================== */
 function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
+  const [camOn, setCamOn] = useState(false);
+  const [teacherFlowStep, setTeacherFlowStep] = useState('idle');
+  const [studentFlowStep, setStudentFlowStep] = useState('idle');
   const [screenShare, setScreenShare] = useState(false);
   const [handRaised, setHandRaised] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
@@ -1744,13 +1748,13 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
   const liveKitVideoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  const handleConnectLiveKit = async () => {
+  const handleConnectLiveKit = async (publishLocalTracks = true) => {
     if (!classroom || !state.currentUser) return;
     setConnectingLiveKit(true);
     setLiveKitError('');
 
     try {
-      const room = await connectLiveKit(classroom.id, state.currentUser.name || `user-${Date.now()}`);
+      const room = await connectLiveKit(classroom.id, state.currentUser.name || `user-${Date.now()}`, publishLocalTracks);
       setLiveKitRoom(room);
       setLiveKitConnected(true);
 
@@ -1775,6 +1779,58 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
       console.error('LiveKit connect error', err);
     } finally {
       setConnectingLiveKit(false);
+    }
+  };
+
+  const startTeacherFlow = async () => {
+    setTeacherFlowStep('camera-permission');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setCamOn(true);
+      setTeacherFlowStep('microphone-permission');
+      stream.getAudioTracks().forEach(track => track.stop());
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicOn(true);
+      setTeacherFlowStep('livekit-connection');
+      await handleConnectLiveKit(true);
+      setTeacherFlowStep('teacher-live');
+    } catch (err) {
+      console.error('Teacher flow error', err);
+      setLiveKitError(err?.message || 'Permission denied or LiveKit connect failed.');
+      setTeacherFlowStep('idle');
+    }
+  };
+
+  const startStudentFlow = async () => {
+    setStudentFlowStep('authenticate');
+    if (!state.currentUser) {
+      navigateTo('login');
+      return;
+    }
+
+    try {
+      const tokenRes = await getLiveKitToken(state.currentUser.name || `user-${Date.now()}`, classroom.id);
+      if (tokenRes.error) throw new Error(tokenRes.error);
+      setStudentFlowStep('connect-room');
+      const { connect } = await import('livekit-client');
+      const room = await connect(tokenRes.url, tokenRes.token, { autoSubscribe: true });
+      setLiveKitRoom(room);
+      setLiveKitConnected(true);
+      room.on('trackSubscribed', (track) => {
+        if (track.kind === 'video' && liveKitVideoRef.current) {
+          track.attach(liveKitVideoRef.current);
+        }
+      });
+      room.on('trackUnsubscribed', (track) => {
+        if (track.kind === 'video') {
+          track.detach().forEach(el => el.remove());
+        }
+      });
+      setStudentFlowStep('see-teacher');
+    } catch (err) {
+      console.error('Student flow error', err);
+      setLiveKitError(err?.message || 'Student authentication or LiveKit connection failed.');
+      setStudentFlowStep('idle');
     }
   };
 
@@ -2718,17 +2774,35 @@ function VirtualClassroom({ navigateTo, state, setState, socketRef }) {
       </div>
 
       {/* Bottom Controls */}
-      <div className="bg-slate-900 border-t border-slate-800 py-3 px-6 flex items-center justify-center space-x-4">
+      <div className="bg-slate-900 border-t border-slate-800 py-3 px-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-center">
         {state.currentUser ? (
-          <button
-            onClick={() => joinRoom()}
-            className="p-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white flex items-center space-x-2 text-xs font-semibold transition"
-          >
-            <Video className="h-5 w-5" />
-            <span className="hidden sm:inline">Join Room</span>
-          </button>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:gap-3">
+            <button
+              onClick={() => {
+                if (state.currentUser.role === 'student') {
+                  startStudentFlow();
+                } else {
+                  startTeacherFlow();
+                }
+              }}
+              className="p-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white flex items-center space-x-2 text-xs font-semibold transition"
+            >
+              <Video className="h-5 w-5" />
+              <span className="hidden sm:inline">{state.currentUser.role === 'student' ? 'Join Class' : 'Start Class'}</span>
+            </button>
+            <div className="rounded-2xl bg-slate-800 border border-slate-700 px-3 py-2 text-[10px] text-slate-300">
+              {state.currentUser.role === 'student' ? (
+                <>
+                  Student flow: <span className="text-indigo-200 font-semibold">{studentFlowStep.replace(/-/g, ' ')}</span>
+                </>
+              ) : (
+                <>
+                  Teacher flow: <span className="text-indigo-200 font-semibold">{teacherFlowStep.replace(/-/g, ' ')}</span>
+                </>
+              )}
+            </div>
+          </div>
         ) : (
-          // Hide the join button for unauthorized users
           <div className="text-xs text-slate-400">Sign in to join this classroom</div>
         )}
         <button

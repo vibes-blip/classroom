@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -19,14 +20,14 @@ app.use(express.json());
 const whiteboards = new Map();
 
 const classes = [
-  { id: 1, title: 'English Language & Advanced Grammar', teacher: 'Mr Abu', students: 124, live: true, startsAt: '18:00', status: 'Live now' },
-  { id: 2, title: 'React & Next.js Masterclass', teacher: 'Dr. Sarah Lin', students: 86, live: false, startsAt: '20:00', status: 'Scheduled' },
-  { id: 3, title: 'AI Engineering Bootcamp', teacher: 'Prof. Alan Turing', students: 92, live: true, startsAt: '16:30', status: 'Live now' },
+  { id: 1, title: 'English Language & Advanced Grammar', username: 'Mr Abu', teacher: 'Mr Abu', students: 124, live: true, startsAt: '18:00', status: 'Live now' },
+  { id: 2, title: 'React & Next.js Masterclass', username: 'Dr. Sarah Lin', teacher: 'Dr. Sarah Lin', students: 86, live: false, startsAt: '20:00', status: 'Scheduled' },
+  { id: 3, title: 'AI Engineering Bootcamp', username: 'Prof. Alan Turing', teacher: 'Prof. Alan Turing', students: 92, live: true, startsAt: '16:30', status: 'Live now' },
 ];
 
 const classrooms = [
-  { id: 'room-1', title: 'English Language & Advanced Grammar', teacher: 'Sarah Lin', subject: 'English', startsAt: 'Now', description: 'Live grammar workshop', attendees: 124, joinCode: 'ENG42', accessMode: 'public', status: 'Live now' },
-  { id: 'room-2', title: 'AI Neural Networks & Python', teacher: 'Marcus Sterling', subject: 'AI', startsAt: 'Today · 2:00 PM', description: 'Hands-on machine learning lab', attendees: 84, joinCode: 'AI101', accessMode: 'link', status: 'Scheduled' },
+  { id: 'room-1', title: 'English Language & Advanced Grammar', username: 'Sarah Lin', teacher: 'Sarah Lin', subject: 'English', startsAt: 'Now', description: 'Live grammar workshop', attendees: 124, joinCode: 'ENG42', accessMode: 'public', status: 'Live now' },
+  { id: 'room-2', title: 'AI Neural Networks & Python', username: 'Marcus Sterling', teacher: 'Marcus Sterling', subject: 'AI', startsAt: 'Today · 2:00 PM', description: 'Hands-on machine learning lab', attendees: 84, joinCode: 'AI101', accessMode: 'link', status: 'Scheduled' },
 ];
 
 const assignments = [
@@ -50,15 +51,18 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/classes', (_req, res) => res.json(classes));
 app.get('/api/classrooms', (_req, res) => res.json(classrooms));
 app.post('/api/classrooms', (req, res) => {
+  const username = req.body.username || req.body.teacher || 'Mr Abu';
   const room = {
     id: `room-${Date.now()}`,
     title: req.body.title || 'New Live Classroom',
-    teacher: req.body.teacher || 'Mr Abu',
+    username,
+    teacher: username,
     subject: req.body.subject || 'Live Class',
     startsAt: req.body.startsAt || 'Now',
     description: req.body.description || '',
     attendees: 1,
     joinCode: req.body.joinCode || 'CLSS1',
+    accessMode: req.body.accessMode || 'public',
     status: 'Live now',
   };
   classrooms.push(room);
@@ -247,6 +251,7 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
 });
 
-server.listen(4000, () => {
-  console.log('API server running on http://localhost:4000');
+const PORT = Number(process.env.PORT) || 4000;
+server.listen(PORT, () => {
+  console.log(`API server running on http://localhost:${PORT}`);
 });

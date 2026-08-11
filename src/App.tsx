@@ -360,9 +360,11 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
   const [requestDetails, setRequestDetails] = useState('');
   const [requestSubmitted, setRequestSubmitted] = useState(false);
 
+  const publicLiveRoom = classrooms.find(room => (room.live || room.status?.toLowerCase().includes('live')) && room.accessMode === 'public');
+  const upcomingPublicRoom = classrooms.find(room => !room.live && room.status?.toLowerCase().includes('scheduled') && room.accessMode === 'public');
   const liveRoom = classrooms.find(room => (room.live || room.status?.toLowerCase().includes('live')));
   const upcomingRoom = classrooms.find(room => !room.live && room.status?.toLowerCase().includes('scheduled'));
-  const featuredRoom = liveRoom;
+  const featuredRoom = publicLiveRoom || liveRoom;
   const hasLiveRoom = Boolean(liveRoom);
   const hasUpcomingRoom = Boolean(upcomingRoom);
   const noSchedule = !hasLiveRoom;
@@ -385,8 +387,8 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
       return;
     }
 
-    if (room.accessMode === 'link' && !joinCode.trim()) {
-      alert('This classroom is join-by-link only. Please enter the join code or use the invitation link.');
+    if ((room.accessMode === 'link' || room.accessMode === 'premium') && !joinCode.trim()) {
+      alert('This classroom requires a join code. Please enter the code or use the invitation link.');
       return;
     }
 
@@ -475,12 +477,18 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
           <div className="flex flex-wrap justify-center gap-4">
             <button
               onClick={() => {
-                if (liveRoom) {
-                  joinRoom(liveRoom);
-                } else {
-                  setRequestSubmitted(false);
-                  setBookingOpen(true);
+                if (!state.currentUser) {
+                  navigateTo('login');
+                  return;
                 }
+
+                if (publicLiveRoom) {
+                  joinRoom(publicLiveRoom);
+                  return;
+                }
+
+                setRequestSubmitted(false);
+                setBookingOpen(true);
               }}
               className="px-8 py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold shadow-xl shadow-indigo-600/30 flex items-center space-x-2 transition transform hover:-translate-y-0.5 group"
             >
@@ -489,21 +497,17 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
             </button>
             <button
               onClick={() => {
-                if (noSchedule) {
-                  setBookingOpen(true);
-                } else if (featuredRoom) {
-                  if (featuredRoom.accessMode === 'link') {
-                    const code = prompt('Enter the classroom join code:');
-                    if (code) joinRoom(featuredRoom, code.trim());
-                  } else {
-                    joinRoom(featuredRoom);
-                  }
+                if (!state.currentUser) {
+                  navigateTo('login');
+                  return;
                 }
+                setRequestSubmitted(false);
+                setBookingOpen(true);
               }}
               className="px-8 py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold border border-slate-700 flex items-center space-x-2 transition"
             >
               <Video className="h-5 w-5 text-pink-400" />
-              <span>{noSchedule ? 'Request a Teacher' : featuredRoom ? `Join ${featuredRoom.teacher}'s Live Classroom` : 'Join Live Classroom'}</span>
+              <span>Request a Teacher</span>
             </button>
           </div>
 
@@ -511,6 +515,50 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
             <div className="mx-auto mt-8 max-w-3xl rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-5 text-emerald-100">
               <div className="font-semibold">Teacher request received</div>
               <p className="mt-2 text-sm text-emerald-200">Your request has been sent to our live scheduling team. We’ll notify you when a teacher is assigned and the class is ready.</p>
+            </div>
+          )}
+
+          {bookingOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 px-4 py-8">
+              <div className="w-full max-w-2xl overflow-hidden rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl">
+                <div className="flex items-start justify-between gap-4 border-b border-slate-800 p-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">Request a Teacher</h2>
+                    <p className="mt-2 text-sm text-slate-400">Submit your topic and preferred schedule, and we’ll route a teacher to you.</p>
+                  </div>
+                  <button onClick={() => setBookingOpen(false)} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+                </div>
+                <div className="space-y-4 p-6">
+                  {!publicLiveRoom && upcomingPublicRoom && (
+                    <div className="rounded-3xl bg-slate-950/80 p-4 text-slate-300">
+                      <p className="text-sm"><span className="font-semibold text-white">Upcoming public class available:</span> {upcomingPublicRoom.title} with {upcomingPublicRoom.teacher} at {upcomingPublicRoom.startsAt}.</p>
+                    </div>
+                  )}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span>Learning Topic</span>
+                      <input value={requestTopic} onChange={e => setRequestTopic(e.target.value)} placeholder="E.g. advanced English grammar" className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+                    </label>
+                    <label className="space-y-2 text-sm text-slate-300">
+                      <span>Preferred Time</span>
+                      <input value={requestTime} onChange={e => setRequestTime(e.target.value)} placeholder="E.g. Tomorrow 2:00 PM" className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+                    </label>
+                  </div>
+                  <label className="block space-y-2 text-sm text-slate-300">
+                    <span>Details for the teacher</span>
+                    <textarea value={requestDetails} onChange={e => setRequestDetails(e.target.value)} placeholder="What do you want to learn? What should the teacher prepare?" className="w-full min-h-[140px] rounded-3xl border border-slate-700 bg-slate-950 px-4 py-4 text-sm text-white focus:outline-none focus:border-indigo-500" />
+                  </label>
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <button
+                      onClick={requestTeacher}
+                      className="rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
+                    >
+                      Submit Request
+                    </button>
+                    <span className="text-sm text-slate-400">We’ll push your request into the live schedule and notify you when the teacher is ready.</span>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -527,81 +575,6 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
         </div>
       </section>
 
-      {noSchedule && (
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="rounded-3xl border border-indigo-500/20 bg-slate-900/80 p-8 grid gap-6 lg:grid-cols-[1.2fr_0.8fr] items-start">
-            <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/10 px-4 py-2 text-xs uppercase tracking-[0.25em] text-indigo-300">
-                <GraduationCap className="h-4 w-4" />
-                <span>No live classes available</span>
-              </div>
-              <h2 className="text-3xl font-black text-white">Teacher not available right now</h2>
-              <p className="text-sm text-slate-400 max-w-xl">Fill in the learning goal and preferred time, and we’ll schedule a live session with an expert teacher as soon as possible.</p>
-              <button onClick={() => { setRequestSubmitted(false); setBookingOpen(true); }} className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500">
-                <Brain className="h-4 w-4" />
-                Request a Live Teacher
-              </button>
-            </div>
-            <div className="rounded-3xl overflow-hidden bg-gradient-to-br from-slate-950 via-indigo-950 to-violet-900 p-6">
-              <div className="rounded-3xl bg-[radial-gradient(circle_at_top_left,rgba(79,70,229,0.25),transparent_35%)] p-6">
-                <p className="text-sm text-slate-300 uppercase tracking-[0.2em] mb-4">Let us know what you want</p>
-                <div className="space-y-4">
-                  <div className="rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
-                    <div className="font-semibold text-white">Topic</div>
-                    <div>English grammar, AI fundamentals, or live coding Q&A</div>
-                  </div>
-                  <div className="rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
-                    <div className="font-semibold text-white">Preferred time</div>
-                    <div>Schedule based on your learning pace</div>
-                  </div>
-                  <div className="rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
-                    <div className="font-semibold text-white">Teacher request</div>
-                    <div>We’ll match you with an expert educator</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {bookingOpen && (
-        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="rounded-3xl border border-indigo-500/20 bg-slate-900/80 p-8 shadow-2xl">
-            <div className="flex items-center justify-between gap-4 mb-6">
-              <div>
-                <h3 className="text-2xl font-bold text-white">Request a Teacher</h3>
-                <p className="text-sm text-slate-400">Submit your topic and preferred schedule, and we’ll route a teacher to you.</p>
-              </div>
-              <button onClick={() => setBookingOpen(false)} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-2 text-sm text-slate-300">
-                <span>Learning Topic</span>
-                <input value={requestTopic} onChange={e => setRequestTopic(e.target.value)} placeholder="E.g. advanced English grammar" className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-              </label>
-              <label className="space-y-2 text-sm text-slate-300">
-                <span>Preferred Time</span>
-                <input value={requestTime} onChange={e => setRequestTime(e.target.value)} placeholder="E.g. Tomorrow 2:00 PM" className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-              </label>
-            </div>
-            <label className="mt-4 block space-y-2 text-sm text-slate-300">
-              <span>Details for the teacher</span>
-              <textarea value={requestDetails} onChange={e => setRequestDetails(e.target.value)} placeholder="What do you want to learn? What should the teacher prepare?" className="w-full min-h-[140px] rounded-3xl border border-slate-700 bg-slate-950 px-4 py-4 text-sm text-white focus:outline-none focus:border-indigo-500" />
-            </label>
-            <div className="mt-6 flex flex-wrap gap-3 items-center">
-              <button
-                onClick={requestTeacher}
-                disabled={!requestTopic.trim()}
-                className="rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
-              >
-                Submit Request
-              </button>
-              <span className="text-sm text-slate-400">We’ll push your request into the live schedule and notify you when the teacher is ready.</span>
-            </div>
-          </div>
-        </section>
-      )}
 
       {/* Popular Courses */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
@@ -713,8 +686,8 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
       return;
     }
 
-    if (room.accessMode === 'link' && !joinCode.trim()) {
-      alert('This classroom is join-by-link only. Please enter the join code or use the invitation link.');
+    if ((room.accessMode === 'link' || room.accessMode === 'premium') && !joinCode.trim()) {
+      alert('This classroom requires a join code. Please enter the code or use the invitation link.');
       return;
     }
 
@@ -797,9 +770,9 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
                     navigateTo('student-dash');
                     return;
                   }
-                  if (room.accessMode === 'link') {
-                    const code = prompt('This class is link-only. Enter the join code:');
-                    if (!code) return;
+                  if (room.accessMode === 'link' || room.accessMode === 'premium') {
+                    const code = prompt('This class requires a join code. Enter the join code:');
+                    if (!code || !code.trim()) return;
                     joinRoom(room, code.trim());
                   } else {
                     joinRoom(room);
@@ -1414,10 +1387,11 @@ function StudentDashboard({ navigateTo, state, setState }) {
 /* ==================== TEACHER DASHBOARD ==================== */
 function TeacherDashboard({ navigateTo, state, setState }) {
   const [tab, setTab] = useState('overview');
-  const [form, setForm] = useState({ title: '', subject: '', startsAt: 'Now', description: '', accessMode: 'public' });
+  const [form, setForm] = useState({ title: '', subject: '', startsAt: 'Now', description: '', accessMode: 'public', maxStudents: 10 });
 
   const createCourse = async () => {
     if (!form.title.trim()) return;
+    const startsNow = form.startsAt.trim().toLowerCase() === 'now';
     const payload = {
       title: form.title.trim(),
       teacher: state.currentUser?.name || 'Instructor',
@@ -1425,7 +1399,10 @@ function TeacherDashboard({ navigateTo, state, setState }) {
       startsAt: form.startsAt.trim() || 'Now',
       description: form.description.trim(),
       accessMode: form.accessMode,
-      joinCode: form.accessMode === 'link' ? `LINK-${Math.random().toString(36).slice(2, 6).toUpperCase()}` : '',
+      maxStudents: Number(form.maxStudents) || 10,
+      joinCode: (form.accessMode === 'link' || form.accessMode === 'premium') ? `CODE-${Math.random().toString(36).slice(2, 6).toUpperCase()}` : '',
+      status: startsNow ? 'Live Now' : 'Scheduled',
+      live: startsNow,
     };
 
     try {
@@ -1441,8 +1418,18 @@ function TeacherDashboard({ navigateTo, state, setState }) {
       setState(prev => ({ ...prev, classrooms: [newClassroom, ...prev.classrooms], activeClassroom: newClassroom.id }));
     }
 
-    setForm({ title: '', subject: '', startsAt: 'Now', description: '', accessMode: 'public' });
+    setForm({ title: '', subject: '', startsAt: 'Now', description: '', accessMode: 'public', maxStudents: 10 });
     setTab('courses');
+    navigateTo('classroom');
+  };
+
+  const startClass = (course) => {
+    const updatedRoom = { ...course, live: true, status: 'Live Now' };
+    setState(prev => ({
+      ...prev,
+      classrooms: prev.classrooms.map(item => item.id === course.id ? updatedRoom : item),
+      activeClassroom: course.id,
+    }));
     navigateTo('classroom');
   };
 
@@ -1573,29 +1560,39 @@ function TeacherDashboard({ navigateTo, state, setState }) {
 
               <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <input value={form.title} onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder="Course title" className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white" />
                     <input value={form.subject} onChange={(e) => setForm(prev => ({ ...prev, subject: e.target.value }))} placeholder="Subject" className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white" />
                     <input value={form.startsAt} onChange={(e) => setForm(prev => ({ ...prev, startsAt: e.target.value }))} placeholder="Starts at" className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white" />
-                    <textarea value={form.description} onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} placeholder="Course description" rows={4} className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white" />
                   </div>
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold text-white">Class access</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {['public', 'link'].map(mode => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setForm(prev => ({ ...prev, accessMode: mode }))}
-                          className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${form.accessMode === mode ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
-                        >
-                          {mode === 'public' ? 'Public access' : 'Link-only access'}
-                        </button>
-                      ))}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <textarea value={form.description} onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} placeholder="Course description" rows={4} className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white" />
+                    <div className="space-y-4">
+                      <div className="text-sm font-semibold text-white">Class settings</div>
+                      <div className="grid grid-cols-3 gap-3">
+                        {['public', 'link', 'premium'].map(mode => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setForm(prev => ({ ...prev, accessMode: mode }))}
+                            className={`rounded-2xl px-3 py-3 text-sm font-semibold transition ${form.accessMode === mode ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
+                          >
+                            {mode === 'public' ? 'Public' : mode === 'link' ? 'Link' : 'Premium'}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        value={form.maxStudents}
+                        onChange={(e) => setForm(prev => ({ ...prev, maxStudents: e.target.value }))}
+                        type="number"
+                        min="1"
+                        placeholder="Max students"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white"
+                      />
+                      {(form.accessMode === 'link' || form.accessMode === 'premium') && (
+                        <p className="text-xs text-slate-400">This class requires a join code for access.</p>
+                      )}
                     </div>
-                    {form.accessMode === 'link' && (
-                      <p className="text-xs text-slate-400">Students must enter the join code or use the invitation link to access this class.</p>
-                    )}
                   </div>
                   <div className="flex flex-wrap gap-3 justify-end">
                     <button onClick={createCourse} className="px-6 py-3 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold">Create Course</button>
@@ -1615,14 +1612,18 @@ function TeacherDashboard({ navigateTo, state, setState }) {
                           </div>
                           <span className="text-[10px] text-slate-300">{course.status}</span>
                         </div>
-                        <div className="mt-3 flex gap-2">
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {!course.live && (
+                            <button onClick={() => startClass(course)} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold">Start Class</button>
+                          )}
                           <button onClick={() => { setState(prev => ({ ...prev, activeClassroom: course.id })); navigateTo('classroom'); }} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold">Open Room</button>
                           <button className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold">Edit</button>
                           <button className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold">Publish</button>
                         </div>
-                        {course.accessMode === 'link' && course.joinCode && (
+                        {['link', 'premium'].includes(course.accessMode) && course.joinCode && (
                           <div className="mt-3 text-xs text-slate-300">Join code: <span className="font-bold text-white">{course.joinCode}</span></div>
                         )}
+                        <div className="mt-2 text-xs text-slate-300">Max students: {course.maxStudents || 10}</div>
                         {course.attendees > 0 && (
                           <div className="mt-2 text-xs text-slate-300">{course.attendees} student{course.attendees === 1 ? '' : 's'} joined</div>
                         )}
@@ -1657,6 +1658,9 @@ function TeacherDashboard({ navigateTo, state, setState }) {
                     <h3 className="text-lg font-bold text-white">{course.title}</h3>
                     <p className="text-sm text-slate-400">{course.description}</p>
                     <div className="flex flex-wrap gap-2">
+                      {!course.live && (
+                        <button onClick={() => startClass(course)} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Start Class</button>
+                      )}
                       <button onClick={() => { setState(prev => ({ ...prev, activeClassroom: course.id })); navigateTo('classroom'); }} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">Open Room</button>
                       <button className="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold">Invite</button>
                     </div>
@@ -2524,9 +2528,9 @@ function LiveClassroom({ navigateTo, state, setState, socketRef }) {
       return;
     }
 
-    // If the class is link-only, prompt for a join code
+    // If the class is link-only or premium, prompt for a join code
     let providedCode = '';
-    if (classroom.accessMode === 'link') {
+    if (classroom.accessMode === 'link' || classroom.accessMode === 'premium') {
       const code = prompt('This classroom requires a join code. Enter the join code to join:');
       if (!code || !code.trim()) {
         alert('Join code is required to enter this classroom.');

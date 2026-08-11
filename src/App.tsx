@@ -2,6 +2,8 @@
 import { io } from 'socket.io-client';
 import { createClassroomRecord, joinClassroomRecord } from './classroomState';
 import { connectLiveKit, getLiveKitToken } from './livekitClient';
+import BookTeacher from './BookTeacher';
+import TeacherApplicationApp from './jointeacher';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE;
@@ -30,30 +32,73 @@ export default function App() {
   const [state, setState] = useState(INITIAL_STATE);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dashboardMetrics, setDashboardMetrics] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [pendingAction, setPendingAction] = useState(null);
   const socketRef = useRef(null);
+
+  const persistUsers = (nextUsers) => {
+    setUsers(nextUsers);
+    try {
+      localStorage.setItem('learnhome.users', JSON.stringify(nextUsers));
+    } catch (err) {
+      console.warn('Unable to persist users', err);
+    }
+  };
+
+  const persistCurrentUser = (user) => {
+    try {
+      if (user) {
+        localStorage.setItem('learnhome.currentUser', JSON.stringify(user));
+      } else {
+        localStorage.removeItem('learnhome.currentUser');
+      }
+    } catch (err) {
+      console.warn('Unable to persist current user', err);
+    }
+  };
+
+  const completeAuth = (user, action = pendingAction) => {
+    const nextUser = { ...user, photo: user.photo || (user.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150') };
+    persistCurrentUser(nextUser);
+    setState(prev => ({ ...prev, currentUser: nextUser, activeTab: nextUser.role === 'teacher' ? 'teacher-dash' : 'student-dash' }));
+    if (action) {
+      if (action.type === 'join-room' && action.roomId) {
+        setState(prev => ({ ...prev, activeClassroom: action.roomId, activeTab: 'classroom' }));
+      } else if (action.type === 'navigate' && action.tab) {
+        setState(prev => ({ ...prev, activeTab: action.tab }));
+      }
+      setPendingAction(null);
+    }
+  };
 
   const logout = () => {
     setState(prev => ({ ...prev, currentUser: null, activeTab: 'home', activeClassroom: null }));
+    persistCurrentUser(null);
+    setPendingAction(null);
   };
 
-  const navigateTo = (tab) => {
-    const requiresLogin = ['student-dash', 'teacher-dash', 'admin-dash', 'classroom'];
-    if (requiresLogin.includes(tab) && !state.currentUser) {
+  const navigateTo = (tab, options = {}) => {
+    const protectedTabs = ['student-dash', 'teacher-dash', 'admin-dash', 'classroom'];
+    if (protectedTabs.includes(tab) && !state.currentUser) {
+      setPendingAction({ type: 'navigate', tab, ...options.pendingAction });
       setState(prev => ({ ...prev, activeTab: 'login' }));
       return;
     }
 
     if (tab === 'teacher-dash' && state.currentUser?.role !== 'teacher') {
+      setPendingAction({ type: 'navigate', tab, ...options.pendingAction });
       setState(prev => ({ ...prev, activeTab: 'login' }));
       return;
     }
 
     if (tab === 'student-dash' && state.currentUser?.role !== 'student') {
+      setPendingAction({ type: 'navigate', tab, ...options.pendingAction });
       setState(prev => ({ ...prev, activeTab: 'login' }));
       return;
     }
 
     if (tab === 'admin-dash' && state.currentUser?.role !== 'admin') {
+      setPendingAction({ type: 'navigate', tab, ...options.pendingAction });
       setState(prev => ({ ...prev, activeTab: 'login' }));
       return;
     }
@@ -89,6 +134,21 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    try {
+      const savedUsers = localStorage.getItem('learnhome.users');
+      const savedCurrent = localStorage.getItem('learnhome.currentUser');
+      if (savedUsers) {
+        setUsers(JSON.parse(savedUsers));
+      }
+      if (savedCurrent) {
+        setState(prev => ({ ...prev, currentUser: JSON.parse(savedCurrent) }));
+      }
+    } catch (err) {
+      console.warn('Unable to load saved auth data', err);
+    }
+  }, []);
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white flex flex-col">
       {/* Header */}
@@ -99,7 +159,7 @@ export default function App() {
               <BookOpen className="h-6 w-6 text-white" />
             </div>
             <span className="text-2xl font-black bg-gradient-to-r from-indigo-400 via-violet-300 to-pink-400 bg-clip-text text-transparent">
-              EduVerse
+              LearnHome
             </span>
           </div>
 
@@ -144,7 +204,7 @@ export default function App() {
           )}
 
           <nav className="hidden md:flex items-center space-x-8 text-sm font-medium text-slate-300">
-            {['home', 'courses', 'teachers', 'permissions', 'pricing', 'about', 'contact'].map(tab => (
+            {['home', 'courses', 'teachers', 'pricing', 'about', 'contact'].map(tab => (
               <button
                 key={tab}
                 onClick={() => navigateTo(tab)}
@@ -202,7 +262,7 @@ export default function App() {
 
         {mobileMenuOpen && (
           <div className="md:hidden bg-slate-900 border-b border-slate-800 px-4 pt-2 pb-6 space-y-3">
-            {['home', 'courses', 'teachers', 'permissions', 'pricing', 'student-dash'].map(tab => (
+            {['home', 'courses', 'teachers', 'pricing', 'student-dash'].map(tab => (
               <button key={tab} onClick={() => navigateTo(tab)} className="block w-full text-left py-2 text-slate-300 hover:text-indigo-400 capitalize">
                 {tab.replace('-', ' ')}
               </button>
@@ -216,12 +276,13 @@ export default function App() {
         {state.activeTab === 'home' && <HomeView navigateTo={navigateTo} classrooms={state.classrooms} setState={setState} state={state} dashboardMetrics={dashboardMetrics} />}
       {state.activeTab === 'courses' && <CoursesView navigateTo={navigateTo} classrooms={state.classrooms} setState={setState} state={state} />}
       {state.activeTab === 'teachers' && <TeachersView navigateTo={navigateTo} />}
-        {state.activeTab === 'permissions' && <PermissionsView />}
         {state.activeTab === 'pricing' && <PricingView navigateTo={navigateTo} />}
         {state.activeTab === 'about' && <AboutView />}
         {state.activeTab === 'contact' && <ContactView />}
-        {state.activeTab === 'login' && <AuthView type="login" navigateTo={navigateTo} setState={setState} />}
-        {state.activeTab === 'register' && <AuthView type="register" navigateTo={navigateTo} setState={setState} />}
+            {state.activeTab === 'book-teacher' && <BookTeacher navigateTo={navigateTo} />}
+        {state.activeTab === 'register-teacher' && <TeacherApplicationApp navigateTo={navigateTo} />}
+        {state.activeTab === 'login' && <AuthView type="login" navigateTo={navigateTo} setState={setState} users={users} persistUsers={persistUsers} completeAuth={completeAuth} pendingAction={pendingAction} setPendingAction={setPendingAction} />}
+        {state.activeTab === 'register' && <AuthView type="register" navigateTo={navigateTo} setState={setState} users={users} persistUsers={persistUsers} completeAuth={completeAuth} pendingAction={pendingAction} setPendingAction={setPendingAction} />}
         {state.activeTab === 'student-dash' && <StudentDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'teacher-dash' && <TeacherDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'admin-dash' && <AdminDashboard metrics={dashboardMetrics} state={state} />}
@@ -311,7 +372,7 @@ export default function App() {
               <div className="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center">
                 <BookOpen className="h-5 w-5 text-white" />
               </div>
-              <span className="text-xl font-black text-white">EduVerse</span>
+              <span className="text-xl font-black text-white">LearnHome</span>
             </div>
             <p className="text-xs text-slate-400">
               Next-generation live academy with real classrooms, AI tutoring, and accredited certificates.
@@ -344,7 +405,7 @@ export default function App() {
           </div>
         </div>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 pt-8 border-t border-slate-900 text-center text-xs text-slate-500">
-          © 2026 EduVerse LMS · React · Tailwind · LiveKit · Laravel API
+          © 2026 LearnHome LMS · React · Tailwind · LiveKit · Laravel API
         </div>
       </footer>
     </div>
@@ -378,7 +439,7 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
 
   const joinRoom = async (room, joinCode = '') => {
     if (!state.currentUser) {
-      navigateTo('login');
+      navigateTo('login', { pendingAction: { type: 'join-room', roomId: room.id, joinCode } });
       return;
     }
 
@@ -478,7 +539,7 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
             <button
               onClick={() => {
                 if (!state.currentUser) {
-                  navigateTo('login');
+                  navigateTo('login', { pendingAction: publicLiveRoom ? { type: 'join-room', roomId: publicLiveRoom.id } : { type: 'navigate', tab: 'book-teacher' } });
                   return;
                 }
 
@@ -498,7 +559,7 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
             <button
               onClick={() => {
                 if (!state.currentUser) {
-                  navigateTo('login');
+                  navigateTo('login', { pendingAction: { type: 'navigate', tab: 'book-teacher' } });
                   return;
                 }
                 setRequestSubmitted(false);
@@ -677,7 +738,7 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
   const [category, setCategory] = useState('All');
   const joinRoom = async (room, joinCode = '') => {
     if (!state.currentUser) {
-      navigateTo('login');
+      navigateTo('login', { pendingAction: { type: 'join-room', roomId: room.id, joinCode } });
       return;
     }
 
@@ -712,15 +773,25 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
       alert('Unable to join room. Please try again.');
     }
   };
-  const courses = [
+  const sourceCourses = state.classrooms.length > 0 ? state.classrooms.map((course, idx) => ({
+    id: course.id || idx,
+    title: course.title || course.subject || `Course ${idx + 1}`,
+    category: course.subject || 'General',
+    rating: course.rating || '4.8',
+    students: course.attendees ? course.attendees.toLocaleString() : '120',
+    price: course.price || '$49',
+    teacher: course.teacher || 'Faculty',
+    img: course.img || 'https://images.unsplash.com/photo-1543269865-cbf427effbad?w=600',
+    accessMode: course.accessMode || 'public',
+    roomId: course.id,
+    live: !!course.live,
+    status: course.status || 'Open',
+  })) : [
     { id: 1, title: 'English Language & Advanced Grammar', category: 'Languages', rating: '4.9', students: '5,210', price: '$49', teacher: 'Mr Abu', img: 'https://images.unsplash.com/photo-1543269865-cbf427effbad?w=600' },
     { id: 2, title: 'Advanced React & Next.js Masterclass', category: 'Web Development', rating: '4.9', students: '4,210', price: '$89', teacher: 'Dr. Sarah Lin', img: 'https://images.unsplash.com/photo-1633356122544-f134324a6cee?w=600' },
     { id: 3, title: 'Full-Stack Python & AI Engineering', category: 'AI', rating: '4.8', students: '3,890', price: '$99', teacher: 'Prof. Alan Turing', img: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600' },
-    { id: 4, title: 'UI/UX Design Systems & Figma Pro', category: 'Design', rating: '5.0', students: '2,450', price: '$75', teacher: 'Elena Rostova', img: 'https://images.unsplash.com/photo-1581291518633-83b4ebd1d83e?w=600' },
-    { id: 5, title: 'Financial Modeling & Quantitative Trading', category: 'Finance', rating: '4.7', students: '1,980', price: '$120', teacher: 'Marcus Sterling', img: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=600' },
-    { id: 6, title: 'Data Structures & Algorithms in C++', category: 'Computer Science', rating: '4.9', students: '6,120', price: '$65', teacher: 'Dr. John Nash', img: 'https://images.unsplash.com/photo-1516116216624-53e697fedbea?w=600' },
   ];
-  const filtered = category === 'All' ? courses : courses.filter(c => c.category === category);
+  const filtered = category === 'All' ? sourceCourses : sourceCourses.filter(c => c.category === category);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-8">
@@ -789,60 +860,6 @@ function CoursesView({ navigateTo, classrooms, setState, state }) {
   );
 }
 
-function PermissionsView() {
-  const rows = [
-    { feature: 'Dashboard', teacher: 'Teaching analytics', student: 'Learning progress' },
-    { feature: 'Create Courses', teacher: '✅', student: '❌' },
-    { feature: 'Edit Courses', teacher: '✅', student: '❌' },
-    { feature: 'Publish Courses', teacher: '✅', student: '❌' },
-    { feature: 'Join Courses', teacher: '❌', student: '✅' },
-    { feature: 'Create Live Class', teacher: '✅', student: '❌' },
-    { feature: 'Join Live Class', teacher: '✅ (Host)', student: '✅ (Participant)' },
-    { feature: 'Start Recording', teacher: '✅', student: '❌' },
-    { feature: 'Screen Share', teacher: '✅', student: 'Limited (if permitted)' },
-    { feature: 'Whiteboard', teacher: '✅', student: 'View/Annotate (if permitted)' },
-    { feature: 'Upload Notes', teacher: '✅', student: '❌' },
-    { feature: 'Download Notes', teacher: '❌', student: '✅' },
-    { feature: 'Create Assignments', teacher: '✅', student: '❌' },
-    { feature: 'Submit Assignments', teacher: '❌', student: '✅' },
-    { feature: 'Grade Assignments', teacher: '✅', student: '❌' },
-    { feature: 'Create Quizzes', teacher: '✅', student: '❌' },
-    { feature: 'Take Quizzes', teacher: '❌', student: '✅' },
-    { feature: 'View Student Progress', teacher: '✅', student: '❌' },
-    { feature: 'View Own Progress', teacher: '❌', student: '✅' },
-    { feature: 'Attendance Management', teacher: '✅', student: 'View only' },
-    { feature: 'Messaging', teacher: 'Students & Admin', student: 'Teachers & Classmates' },
-    { feature: 'Notifications', teacher: 'Class management', student: 'Learning reminders' },
-    { feature: 'AI Tools', teacher: 'Lesson planning, quiz generation', student: 'Homework help, explanations' },
-    { feature: 'Certificates', teacher: 'Issue/Approve', student: 'View & Download' },
-  ];
-
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 space-y-8">
-      <div className="text-center max-w-3xl mx-auto">
-        <h1 className="text-3xl font-black text-white">Role-Based Permissions</h1>
-        <p className="text-sm text-slate-400 mt-2">Teachers manage the learning environment, while students participate, submit work, and track their own progress.</p>
-      </div>
-
-      <div className="overflow-hidden rounded-3xl border border-slate-700 bg-slate-800/60">
-        <div className="grid grid-cols-[1.6fr_1fr_1fr] bg-slate-900/80 px-4 py-3 text-sm font-semibold text-slate-200">
-          <div>Feature</div>
-          <div>Teacher</div>
-          <div>Student</div>
-        </div>
-        <div className="divide-y divide-slate-700/70">
-          {rows.map((row) => (
-            <div key={row.feature} className="grid grid-cols-[1.6fr_1fr_1fr] px-4 py-3 text-sm text-slate-300">
-              <div className="font-medium text-white">{row.feature}</div>
-              <div>{row.teacher}</div>
-              <div>{row.student}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function TeachersView({ navigateTo }) {
   const teachers = [
@@ -926,9 +943,9 @@ function AboutView() {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
       <div className="bg-slate-800/60 border border-slate-700/60 rounded-3xl p-10 max-w-3xl mx-auto space-y-6">
-        <h1 className="text-3xl font-black text-white">About EduVerse</h1>
+        <h1 className="text-3xl font-black text-white">About LearnHome</h1>
         <p className="text-slate-300 leading-relaxed">
-          EduVerse is a next-generation learning platform that combines live interactive classrooms (powered by LiveKit), AI tutoring (Gemini), assignments, certificates and real-time collaboration — all designed to feel as polished as Google Classroom, Zoom and Udemy combined.
+          LearnHome is a next-generation learning platform that combines live interactive classrooms (powered by LiveKit), AI tutoring (Gemini), assignments, certificates and real-time collaboration — all designed to feel as polished as Google Classroom, Zoom and Udemy combined.
         </p>
         <div className="grid grid-cols-2 gap-4 pt-4">
           <div className="bg-slate-900/80 rounded-2xl p-4">
@@ -962,7 +979,7 @@ function ContactView() {
   );
 }
 
-function AuthView({ type, navigateTo, setState }) {
+function AuthView({ type, navigateTo, setState, users, persistUsers, completeAuth, pendingAction }) {
   const [role, setRole] = useState('student');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -980,22 +997,30 @@ function AuthView({ type, navigateTo, setState }) {
       ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
       : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150';
 
-    // Set the current user first, then switch tabs on the next tick to avoid stale-state checks
-    setState(prev => ({
-      ...prev,
-      currentUser: {
-        id: Date.now(),
-        name: userName,
-        email: normalizedEmail,
-        role: selectedRole,
-        photo: userPhoto,
-      },
-    }));
+    const existingUser = users.find(user => user.email === normalizedEmail && user.password === password && user.role === selectedRole);
+    if (type === 'login') {
+      if (!existingUser) {
+        alert('Account not found. Please register or check your credentials.');
+        return;
+      }
+      completeAuth(existingUser);
+      return;
+    }
 
-    // Ensure the activeTab is updated after state has been queued
-    setTimeout(() => {
-      setState(prev => ({ ...prev, activeTab: selectedRole === 'teacher' ? 'teacher-dash' : 'student-dash' }));
-    }, 0);
+    const newUser = {
+      id: Date.now(),
+      name: userName,
+      email: normalizedEmail,
+      password,
+      role: selectedRole,
+      photo: userPhoto,
+    };
+
+    const nextUsers = [...users.filter(user => user.email !== normalizedEmail), newUser];
+    persistUsers(nextUsers);
+    const hadPendingAction = Boolean(pendingAction);
+    const authAction = hadPendingAction ? pendingAction : (selectedRole === 'teacher' ? { type: 'navigate', tab: 'register-teacher' } : null);
+    completeAuth(newUser, authAction);
   };
 
   return (
@@ -1469,6 +1494,65 @@ function TeacherDashboard({ navigateTo, state, setState }) {
     { label: 'Attendance', value: '+6%' },
     { label: 'Revenue', value: '$12.4k' },
   ];
+
+  const hasCourses = teacherCourses.length > 0;
+
+  if (!hasCourses) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="rounded-3xl bg-gradient-to-r from-violet-950/80 via-indigo-950/80 to-slate-900 border border-violet-500/30 p-10 text-white shadow-2xl">
+          <div className="sm:flex sm:items-center sm:justify-between gap-6">
+            <div className="space-y-6">
+              <span className="inline-flex items-center rounded-full bg-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-violet-200">Teacher Portal</span>
+              <div className="space-y-3">
+                <h1 className="text-4xl font-black tracking-tight">Welcome to your LearnHome teacher dashboard</h1>
+                <p className="max-w-2xl text-slate-300 text-base leading-7">Your classroom is ready. Create your first course, configure access, and launch a live session in under a minute.</p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button onClick={() => setTab('courses')} className="rounded-3xl bg-white text-violet-900 px-6 py-3 text-sm font-semibold shadow-xl shadow-violet-600/20 hover:bg-slate-100">Create first course</button>
+                <button onClick={() => setTab('live')} className="rounded-3xl bg-violet-600 text-white px-6 py-3 text-sm font-semibold hover:bg-violet-500">Plan a live class</button>
+              </div>
+            </div>
+            <div className="rounded-3xl bg-slate-950/80 border border-slate-800 p-6 max-w-sm">
+              <div className="text-sm uppercase tracking-[0.25em] text-slate-400 font-bold">Quick start</div>
+              <ul className="mt-5 space-y-4 text-slate-300 text-sm">
+                <li className="flex items-start gap-3">
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  Create your first course with topic, access mode, and capacity.
+                </li>
+                <li className="flex items-start gap-3">
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  Launch a live session and invite students with a join code.
+                </li>
+                <li className="flex items-start gap-3">
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  Review attendance, analytics, and feedback from one place.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+          <div className="rounded-3xl border border-slate-700 bg-slate-900/80 p-6">
+            <div className="text-sm text-slate-400 uppercase tracking-[0.25em] font-semibold">Your teaching home</div>
+            <div className="mt-4 text-3xl font-black text-white">No courses yet</div>
+            <p className="mt-3 text-slate-400 text-sm">Start by creating your first course and invite learners to join your live classroom.</p>
+          </div>
+          <div className="rounded-3xl border border-slate-700 bg-slate-900/80 p-6">
+            <div className="text-sm text-slate-400 uppercase tracking-[0.25em] font-semibold">Launch faster</div>
+            <div className="mt-4 text-3xl font-black text-white">Beautiful teacher tools</div>
+            <p className="mt-3 text-slate-400 text-sm">Your dashboard will show live sessions, student metrics, and course management as you add content.</p>
+          </div>
+          <div className="rounded-3xl border border-slate-700 bg-slate-900/80 p-6">
+            <div className="text-sm text-slate-400 uppercase tracking-[0.25em] font-semibold">Get started</div>
+            <div className="mt-4 text-3xl font-black text-white">Create a lesson</div>
+            <p className="mt-3 text-slate-400 text-sm">Use the course builder to set access type, capacity, and description.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -1984,7 +2068,7 @@ function LiveClassroom({ navigateTo, state, setState, socketRef }) {
   const startStudentFlow = async () => {
     setStudentFlowStep('authenticate');
     if (!state.currentUser) {
-      navigateTo('login');
+      navigateTo('login', { pendingAction: { type: 'join-room', roomId: classroom.id } });
       return;
     }
 
@@ -2529,7 +2613,7 @@ function LiveClassroom({ navigateTo, state, setState, socketRef }) {
 
     if (!state.currentUser) {
       // Require login before joining
-      navigateTo('login');
+      navigateTo('login', { pendingAction: { type: 'navigate', tab: 'classroom' } });
       return;
     }
 

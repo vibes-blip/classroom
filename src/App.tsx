@@ -4,6 +4,7 @@ import { createClassroomRecord, joinClassroomRecord } from './classroomState';
 import { connectLiveKit, getLiveKitToken } from './livekitClient';
 import BookTeacher from './BookTeacher';
 import TeacherApplicationApp from './jointeacher';
+import { supabase } from './lib/supabase';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE;
@@ -32,18 +33,9 @@ export default function App() {
   const [state, setState] = useState(INITIAL_STATE);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dashboardMetrics, setDashboardMetrics] = useState(null);
-  const [users, setUsers] = useState([]);
   const [pendingAction, setPendingAction] = useState(null);
   const socketRef = useRef(null);
 
-  const persistUsers = (nextUsers) => {
-    setUsers(nextUsers);
-    try {
-      localStorage.setItem('learnhome.users', JSON.stringify(nextUsers));
-    } catch (err) {
-      console.warn('Unable to persist users', err);
-    }
-  };
 
   const persistCurrentUser = (user) => {
     try {
@@ -135,18 +127,47 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    try {
-      const savedUsers = localStorage.getItem('learnhome.users');
-      const savedCurrent = localStorage.getItem('learnhome.currentUser');
-      if (savedUsers) {
-        setUsers(JSON.parse(savedUsers));
+    const initializeAuth = async () => {
+      const {
+        data: { session },
+        error,
+      } = await supabase.auth.getSession();
+      if (error) {
+        console.warn('Supabase auth session error', error);
+        return;
       }
-      if (savedCurrent) {
-        setState(prev => ({ ...prev, currentUser: JSON.parse(savedCurrent) }));
+      if (session?.user) {
+        const user = session.user;
+        const currentUser = {
+          id: user.id,
+          email: user.email,
+          role: user.user_metadata?.role || 'student',
+          name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
+          photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
+        };
+        setState(prev => ({ ...prev, currentUser }));
       }
-    } catch (err) {
-      console.warn('Unable to load saved auth data', err);
-    }
+    };
+
+    initializeAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        const user = session.user;
+        const currentUser = {
+          id: user.id,
+          email: user.email,
+          role: user.user_metadata?.role || 'student',
+          name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
+          photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
+        };
+        setState(prev => ({ ...prev, currentUser }));
+      } else {
+        setState(prev => ({ ...prev, currentUser: null, activeTab: 'home', activeClassroom: null }));
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   return (
@@ -281,8 +302,8 @@ export default function App() {
         {state.activeTab === 'contact' && <ContactView />}
             {state.activeTab === 'book-teacher' && <BookTeacher navigateTo={navigateTo} />}
         {state.activeTab === 'register-teacher' && <TeacherApplicationApp navigateTo={navigateTo} />}
-        {state.activeTab === 'login' && <AuthView type="login" navigateTo={navigateTo} setState={setState} users={users} persistUsers={persistUsers} completeAuth={completeAuth} pendingAction={pendingAction} setPendingAction={setPendingAction} />}
-        {state.activeTab === 'register' && <AuthView type="register" navigateTo={navigateTo} setState={setState} users={users} persistUsers={persistUsers} completeAuth={completeAuth} pendingAction={pendingAction} setPendingAction={setPendingAction} />}
+        {state.activeTab === 'login' && <AuthView type="login" completeAuth={completeAuth} pendingAction={pendingAction} navigateTo={navigateTo} />}
+        {state.activeTab === 'register' && <AuthView type="register" completeAuth={completeAuth} pendingAction={pendingAction} navigateTo={navigateTo} />}
         {state.activeTab === 'student-dash' && <StudentDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'teacher-dash' && <TeacherDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'admin-dash' && <AdminDashboard metrics={dashboardMetrics} state={state} />}
@@ -979,48 +1000,79 @@ function ContactView() {
   );
 }
 
-function AuthView({ type, navigateTo, setState, users, persistUsers, completeAuth, pendingAction }) {
+function AuthView({ type, completeAuth, pendingAction }) {
   const [role, setRole] = useState('student');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = () => {
+  const buildUserMetadata = () => ({
+    role: role === 'teacher' ? 'teacher' : 'student',
+    name: name.trim() || email.trim().split('@')[0] || (role === 'teacher' ? 'Instructor' : 'Student'),
+    photo: role === 'teacher'
+      ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
+      : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150',
+  });
+
+  const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
       alert('Please enter both email and password.');
       return;
     }
-    const normalizedEmail = email.trim().toLowerCase();
-    const selectedRole = role === 'teacher' ? 'teacher' : 'student';
-    const userName = name.trim() || normalizedEmail.split('@')[0] || (selectedRole === 'teacher' ? 'Instructor' : 'Student');
-    const userPhoto = selectedRole === 'teacher'
-      ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
-      : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150';
 
-    const existingUser = users.find(user => user.email === normalizedEmail && user.password === password && user.role === selectedRole);
-    if (type === 'login') {
-      if (!existingUser) {
-        alert('Account not found. Please register or check your credentials.');
+    setLoading(true);
+
+    try {
+      if (type === 'login') {
+        const { error, data } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
+        if (error) {
+          alert(error.message || 'Login failed.');
+          return;
+        }
+        if (data?.user) {
+          const currentUser = {
+            id: data.user.id,
+            email: data.user.email,
+            role: data.user.user_metadata?.role || 'student',
+            name: data.user.user_metadata?.name || data.user.email?.split('@')[0],
+            photo: data.user.user_metadata?.photo || (data.user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
+          };
+          const action = pendingAction;
+          completeAuth(currentUser, action);
+        }
         return;
       }
-      completeAuth(existingUser);
-      return;
+
+      const metadata = buildUserMetadata();
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
+        options: { data: metadata },
+      });
+
+      if (error) {
+        alert(error.message || 'Signup failed.');
+        return;
+      }
+
+      if (data?.user) {
+        const currentUser = {
+          id: data.user.id,
+          email: data.user.email,
+          role: metadata.role,
+          name: metadata.name,
+          photo: metadata.photo,
+        };
+        const action = pendingAction || (metadata.role === 'teacher' ? { type: 'navigate', tab: 'register-teacher' } : null);
+        completeAuth(currentUser, action);
+      }
+    } finally {
+      setLoading(false);
     }
-
-    const newUser = {
-      id: Date.now(),
-      name: userName,
-      email: normalizedEmail,
-      password,
-      role: selectedRole,
-      photo: userPhoto,
-    };
-
-    const nextUsers = [...users.filter(user => user.email !== normalizedEmail), newUser];
-    persistUsers(nextUsers);
-    const hadPendingAction = Boolean(pendingAction);
-    const authAction = hadPendingAction ? pendingAction : (selectedRole === 'teacher' ? { type: 'navigate', tab: 'register-teacher' } : null);
-    completeAuth(newUser, authAction);
   };
 
   return (

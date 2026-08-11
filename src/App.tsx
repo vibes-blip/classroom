@@ -973,7 +973,6 @@ function AuthView({ type, navigateTo, setState }) {
       alert('Please enter both email and password.');
       return;
     }
-
     const normalizedEmail = email.trim().toLowerCase();
     const selectedRole = role === 'teacher' ? 'teacher' : 'student';
     const userName = name.trim() || normalizedEmail.split('@')[0] || (selectedRole === 'teacher' ? 'Instructor' : 'Student');
@@ -981,6 +980,7 @@ function AuthView({ type, navigateTo, setState }) {
       ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
       : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150';
 
+    // Set the current user first, then switch tabs on the next tick to avoid stale-state checks
     setState(prev => ({
       ...prev,
       currentUser: {
@@ -990,8 +990,12 @@ function AuthView({ type, navigateTo, setState }) {
         role: selectedRole,
         photo: userPhoto,
       },
-      activeTab: selectedRole === 'teacher' ? 'teacher-dash' : 'student-dash',
     }));
+
+    // Ensure the activeTab is updated after state has been queued
+    setTimeout(() => {
+      setState(prev => ({ ...prev, activeTab: selectedRole === 'teacher' ? 'teacher-dash' : 'student-dash' }));
+    }, 0);
   };
 
   return (
@@ -1042,6 +1046,7 @@ function AuthView({ type, navigateTo, setState }) {
             className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
           />
           <button
+            type="button"
             onClick={handleSubmit}
             className={`w-full py-3 rounded-xl font-bold text-sm shadow-lg ${role === 'teacher' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white' : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white'}`}
           >

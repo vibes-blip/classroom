@@ -1,13 +1,8 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
-import { createClassroomRecord, joinClassroomRecord } from './classroomState';
 import { connectLiveKit, getLiveKitToken } from './livekitClient';
 import BookTeacher from './BookTeacher';
 import TeacherApplicationApp from './jointeacher';
 import { supabase } from './lib/supabase';
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE;
 import {
   BookOpen, Users, Award, Calendar, DollarSign, Settings, Bell, MessageSquare,
   Video, FileText, CheckCircle, Shield, Search, Menu, X, Play, ArrowRight,
@@ -34,7 +29,6 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dashboardMetrics, setDashboardMetrics] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
-  const socketRef = useRef(null);
 
 
   const persistCurrentUser = (user) => {
@@ -101,73 +95,122 @@ export default function App() {
   };
 
   useEffect(() => {
-    Promise.all([
-      fetch(`${API_BASE}/api/classrooms`).then(res => res.json()),
-      fetch(`${API_BASE}/api/analytics/dashboard`).then(res => res.json()),
-    ]).then(([classrooms, metrics]) => {
-      setState(prev => ({ ...prev, classrooms }));
-      setDashboardMetrics(metrics);
-    }).catch(() => {});
-  }, []);
+  const loadData = async () => {
+    try {
+      // Load classrooms from Supabase
+      const { data: classrooms, error: classroomsError } = await supabase
+        .from('classrooms')
+        .select(`
+          *,
+          teacher:profiles!classrooms_teacher_id_fkey (
+            id,
+            name,
+            email,
+            photo
+          )
+        `)
+        .order('starts_at', { ascending: true });
 
-  useEffect(() => {
-    if (!socketRef.current) {
-      socketRef.current = io(SOCKET_URL);
-      socketRef.current.on('connect', () => {
-        console.log('Socket connected', socketRef.current.id);
-      });
-    }
-
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
+      if (classroomsError) {
+        console.error('Failed to load classrooms:', classroomsError);
+        return;
       }
-    };
-  }, []);
+
+      // Get dashboard metrics from Supabase
+      const [
+        { count: totalClasses },
+        { count: totalStudents },
+        { count: totalTeachers }
+      ] = await Promise.all([
+        supabase
+          .from('classrooms')
+          .select('*', { count: 'exact', head: true }),
+
+        supabase
+          .from('profiles')
+          .select('*', { count: 'exact', head: true })
+          .eq('role', 'student'),
+
+        supabase
+          .from('profiles')
+          .select('*', { count: 'exact', head: true })
+          .eq('role', 'teacher')
+      ]);
+
+      setState(prev => ({
+        ...prev,
+        classrooms: classrooms || []
+      }));
+
+      setDashboardMetrics({
+        totalClasses: totalClasses || 0,
+        totalStudents: totalStudents || 0,
+        totalTeachers: totalTeachers || 0
+      });
+
+    } catch (error) {
+      console.error('Failed to load LearnHome data:', error);
+    }
+  };
+
+  loadData();
+}, []);
 
   useEffect(() => {
     const initializeAuth = async () => {
-      const {
-        data: { session },
-        error,
-      } = await supabase.auth.getSession();
-      if (error) {
-        console.warn('Supabase auth session error', error);
+      if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
+        console.warn('Supabase environment variables missing; skipping auth initialization.');
         return;
       }
-      if (session?.user) {
-        const user = session.user;
-        const currentUser = {
-          id: user.id,
-          email: user.email,
-          role: user.user_metadata?.role || 'student',
-          name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
-          photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
-        };
-        setState(prev => ({ ...prev, currentUser }));
+
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+        if (error) {
+          console.warn('Supabase auth session error', error);
+          return;
+        }
+        if (session?.user) {
+          const user = session.user;
+          const currentUser = {
+            id: user.id,
+            email: user.email,
+            role: user.user_metadata?.role || 'student',
+            name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
+            photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
+          };
+          setState(prev => ({ ...prev, currentUser }));
+        }
+      } catch (err) {
+        console.warn('Supabase initialization error', err);
       }
     };
 
     initializeAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user) {
-        const user = session.user;
-        const currentUser = {
-          id: user.id,
-          email: user.email,
-          role: user.user_metadata?.role || 'student',
-          name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
-          photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
-        };
-        setState(prev => ({ ...prev, currentUser }));
-      } else {
-        setState(prev => ({ ...prev, currentUser: null, activeTab: 'home', activeClassroom: null }));
-      }
-    });
+    let subscription;
+    if (import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
+      const { data } = supabase.auth.onAuthStateChange((event, session) => {
+        if (session?.user) {
+          const user = session.user;
+          const currentUser = {
+            id: user.id,
+            email: user.email,
+            role: user.user_metadata?.role || 'student',
+            name: user.user_metadata?.name || user.email?.split('@')[0] || 'Learner',
+            photo: user.user_metadata?.photo || (user.user_metadata?.role === 'teacher' ? 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150' : 'https://images.unsplash.com/photo-1503023345310-bd7c1de61c7d?w=150'),
+          };
+          setState(prev => ({ ...prev, currentUser }));
+        } else {
+          setState(prev => ({ ...prev, currentUser: null, activeTab: 'home', activeClassroom: null }));
+        }
+      });
+      subscription = data?.subscription;
+    }
 
-    return () => subscription.unsubscribe();
+    return () => subscription?.unsubscribe && subscription.unsubscribe();
   }, []);
 
   return (
@@ -307,7 +350,7 @@ export default function App() {
         {state.activeTab === 'student-dash' && <StudentDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'teacher-dash' && <TeacherDashboard navigateTo={navigateTo} state={state} setState={setState} />}
         {state.activeTab === 'admin-dash' && <AdminDashboard metrics={dashboardMetrics} state={state} />}
-        {state.activeTab === 'classroom' && <LiveClassroom navigateTo={navigateTo} state={state} setState={setState} socketRef={socketRef} />}
+        {state.activeTab === 'classroom' && <LiveClassroom navigateTo={navigateTo} state={state} setState={setState} />}
       </main>
 
       {/* AI Tutor Widget */}
@@ -520,7 +563,13 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const newRoom = response.ok ? await response.json() : createClassroomRecord(payload);
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to create classroom');
+      }
+      
+      const newRoom = await response.json();
       setState(prev => ({ ...prev, classrooms: [newRoom, ...prev.classrooms] }));
       setRequestSubmitted(true);
       setRequestTopic('');
@@ -528,15 +577,9 @@ function HomeView({ navigateTo, classrooms, setState, state, dashboardMetrics })
       setRequestDetails('');
       setBookingOpen(false);
       navigateTo('home');
-    } catch {
-      const newRoom = createClassroomRecord(payload);
-      setState(prev => ({ ...prev, classrooms: [newRoom, ...prev.classrooms] }));
-      setRequestSubmitted(true);
-      setRequestTopic('');
-      setRequestTime('');
-      setRequestDetails('');
-      setBookingOpen(false);
-      navigateTo('home');
+    } catch (error) {
+      console.error('Error creating classroom:', error);
+      alert('Failed to create classroom. Please try again.');
     }
   };
 
@@ -1493,11 +1536,17 @@ function TeacherDashboard({ navigateTo, state, setState }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const newClassroom = response.ok ? await response.json() : createClassroomRecord(payload);
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to create classroom');
+      }
+      
+      const newClassroom = await response.json();
       setState(prev => ({ ...prev, classrooms: [newClassroom, ...prev.classrooms], activeClassroom: newClassroom.id }));
     } catch (error) {
-      const newClassroom = createClassroomRecord(payload);
-      setState(prev => ({ ...prev, classrooms: [newClassroom, ...prev.classrooms], activeClassroom: newClassroom.id }));
+      console.error('Error creating classroom:', error);
+      alert('Failed to create classroom. Please try again.');
     }
 
     setForm({ title: '', subject: '', startsAt: 'Now', description: '', accessMode: 'public', maxStudents: 10 });
@@ -2698,13 +2747,8 @@ function LiveClassroom({ navigateTo, state, setState, socketRef }) {
         notifications: [{ id: Date.now(), text: `You joined ${updatedRoom.title} hosted by ${updatedRoom.teacher}.`, time: 'Just now', unread: true }, ...prev.notifications],
       }));
     } catch (error) {
-      const updatedRoom = joinClassroomRecord(classroom);
-      setState(prev => ({
-        ...prev,
-        activeClassroom: updatedRoom.id,
-        classrooms: prev.classrooms.map(room => room.id === updatedRoom.id ? updatedRoom : room),
-        notifications: [{ id: Date.now(), text: `You joined ${updatedRoom.title} hosted by ${updatedRoom.teacher}.`, time: 'Just now', unread: true }, ...prev.notifications],
-      }));
+      console.error('Error joining classroom:', error);
+      alert('Failed to join classroom. Please try again.');
     }
   };
 

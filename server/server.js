@@ -1,263 +1,413 @@
-import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import dotenv from 'dotenv';
+import { AccessToken } from 'livekit-server-sdk';
+import { createClient } from '@supabase/supabase-js';
+dotenv.config();
 
 const app = express();
-const server = new (await import('http')).Server(app);
-const { Server } = await import('socket.io');
-const io = new Server(server, {
-  cors: { origin: '*' },
-});
-app.use(cors());
+
+const PORT = process.env.PORT || 4000;
+
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || 'http://localhost:5173';
+
+const LIVEKIT_URL = process.env.LIVEKIT_URL;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+
+// --------------------------------------------------
+// Supabase setup
+// --------------------------------------------------
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+
+if (!SUPABASE_URL) {
+  console.error('❌ SUPABASE_URL is missing');
+}
+
+if (!SUPABASE_SERVICE_KEY) {
+  console.error('❌ SUPABASE_SERVICE_KEY is missing');
+}
+
+const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_KEY,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+);
+
+// --------------------------------------------------
+// Validate required environment variables
+// --------------------------------------------------
+
+if (!LIVEKIT_URL) {
+  console.error('❌ LIVEKIT_URL is missing');
+}
+
+if (!LIVEKIT_API_KEY) {
+  console.error('❌ LIVEKIT_API_KEY is missing');
+}
+
+if (!LIVEKIT_API_SECRET) {
+  console.error('❌ LIVEKIT_API_SECRET is missing');
+}
+
+// --------------------------------------------------
+// Middleware
+// --------------------------------------------------
+
+app.use(
+  cors({
+    origin: [
+      FRONTEND_URL,
+      'http://localhost:5173',
+      'http://localhost:3000'
+    ],
+    credentials: true
+  })
+);
+
 app.use(express.json());
 
-// In-memory whiteboard actions per room
-const whiteboards = new Map();
+// --------------------------------------------------
+// Auth middleware - Verify Supabase token
+// --------------------------------------------------
 
-const classes = [
-  { id: 1, title: 'English Language & Advanced Grammar', username: 'Mr Abu', teacher: 'Mr Abu', students: 124, live: true, startsAt: '18:00', status: 'Live now' },
-  { id: 2, title: 'React & Next.js Masterclass', username: 'Dr. Sarah Lin', teacher: 'Dr. Sarah Lin', students: 86, live: false, startsAt: '20:00', status: 'Scheduled' },
-  { id: 3, title: 'AI Engineering Bootcamp', username: 'Prof. Alan Turing', teacher: 'Prof. Alan Turing', students: 92, live: true, startsAt: '16:30', status: 'Live now' },
-];
-
-const classrooms = [
-  { id: 'room-1', title: 'English Language & Advanced Grammar', username: 'Sarah Lin', teacher: 'Sarah Lin', subject: 'English', startsAt: 'Now', description: 'Live grammar workshop', attendees: 124, joinCode: 'ENG42', accessMode: 'public', status: 'Live now', participants: [{ id: 'p-1', user: 'Alex', joinedAt: new Date().toISOString(), role: 'student' }] },
-  { id: 'room-2', title: 'AI Neural Networks & Python', username: 'Marcus Sterling', teacher: 'Marcus Sterling', subject: 'AI', startsAt: 'Today · 2:00 PM', description: 'Hands-on machine learning lab', attendees: 84, joinCode: 'AI101', accessMode: 'link', status: 'Scheduled', participants: [] },
-];
-
-const assignments = [
-  { id: 1, title: 'Grammar Practice Quiz', course: 'English Language', due: '2026-08-10', status: 'Pending', score: '-' },
-  { id: 2, title: 'React Hooks Sprint', course: 'React Masterclass', due: '2026-08-12', status: 'Submitted', score: 'Pending Review' },
-];
-
-const messages = [
-  { id: 1, user: 'Mr Abu', text: 'Welcome back! Share your questions in the live room.', time: '9:10 AM' },
-  { id: 2, user: 'Alex', text: 'I am ready for the lesson and the AI tutor.', time: '9:12 AM' },
-];
-
-const analytics = {
-  attendance: 94,
-  revenue: 18240,
-  completion: 87,
-  activeStudents: 1240,
-};
-
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.get('/api/classes', (_req, res) => res.json(classes));
-app.get('/api/classrooms', (_req, res) => res.json(classrooms));
-app.post('/api/classrooms', (req, res) => {
-  const username = req.body.username || req.body.teacher || 'Mr Abu';
-  const room = {
-    id: `room-${Date.now()}`,
-    title: req.body.title || 'New Live Classroom',
-    username,
-    teacher: username,
-    subject: req.body.subject || 'Live Class',
-    startsAt: req.body.startsAt || 'Now',
-    description: req.body.description || '',
-    attendees: 1,
-    joinCode: req.body.joinCode || 'CLSS1',
-    accessMode: req.body.accessMode || 'public',
-    status: 'Live now',
-  };
-  classrooms.push(room);
-  res.json(room);
-});
-app.post('/api/classrooms/:id/join', (req, res) => {
-  const room = classrooms.find(item => item.id === req.params.id);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-
-  const providedCode = (req.body.joinCode || '').trim().toUpperCase();
-  if (room.accessMode === 'link' && providedCode !== room.joinCode) {
-    return res.status(403).json({ error: 'Join link or code required' });
-  }
-
-  const user = req.body.user || 'Guest';
-  room.participants = room.participants || [];
-  const existingParticipant = room.participants.find(p => p.user === user);
-  if (!existingParticipant) {
-    room.participants.push({ id: `p-${Date.now()}`, user, joinedAt: new Date().toISOString(), role: 'student' });
-  }
-  room.attendees = room.participants.length;
-  res.json(room);
-});
-app.get('/api/assignments', (_req, res) => res.json(assignments));
-app.get('/api/messages', (_req, res) => res.json(messages));
-app.get('/api/analytics', (_req, res) => res.json(analytics));
-app.get('/api/analytics/dashboard', (_req, res) => res.json({
-  students: 1240,
-  teachers: 86,
-  revenue: 18240,
-  liveClasses: 12,
-  pendingApprovals: 7,
-  attendance: 94,
-  payments: 148,
-}));
-
-app.post('/api/messages', (req, res) => {
-  const message = { id: Date.now(), user: req.body.user || 'Student', text: req.body.text || '', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
-  messages.push(message);
-  io.emit('newMessage', message);
-  res.json(message);
-});
-
-// LiveKit token generation endpoint
-app.post('/api/livekit/token', async (req, res) => {
+/**
+ * Middleware to verify Supabase Auth token and attach user to request
+ */
+async function verifyAuth(req, res, next) {
   try {
-    const { identity = `user-${Date.now()}`, room = req.body.room || 'default' } = req.body || {};
-    const { AccessToken, VideoGrant } = await import('livekit-server-sdk');
-    const apiKey = process.env.LIVEKIT_API_KEY || 'APItUofrmpEDijJ';
-    const apiSecret = process.env.LIVEKIT_API_SECRET || 'YmtuYuGFyhABcOk5CQcD0rDTaUfKdY6Iee1uMD0wKeND';
-    const url = process.env.LIVEKIT_URL || 'wss://dcons-9d0tismg.livekit.cloud';
+    const authHeader = req.headers.authorization;
 
-    if (!apiKey || !apiSecret) {
-      return res.status(500).json({ error: 'LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in environment' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Missing or invalid authorization header'
+      });
     }
 
-    const at = new AccessToken(apiKey, apiSecret, { identity });
-    const grant = new VideoGrant({ room });
-    at.addGrant(grant);
-    const token = at.toJwt();
-    res.json({ token, url, identity });
+    const token = authHeader.substring(7);
+
+    // Verify the token with Supabase
+    const {
+      data: { user },
+      error
+    } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      console.error(
+        '❌ Auth verification failed:',
+        error?.message
+      );
+
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired token'
+      });
+    }
+
+    // Get user profile from database
+    const { data: profile, error: profileError } =
+      await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+    if (profileError) {
+      console.error(
+        '❌ Profile fetch failed:',
+        profileError.message
+      );
+
+      return res.status(401).json({
+        success: false,
+        error: 'User profile not found'
+      });
+    }
+
+    // Attach user and profile to request
+    req.user = user;
+    req.profile = profile;
+
+    next();
   } catch (err) {
-    console.warn('LiveKit token generation error', err?.message || err);
-    res.status(500).json({ error: 'LiveKit server SDK not available. Install livekit-server-sdk.' });
+    console.error('❌ Auth middleware error:', err);
+
+    return res.status(500).json({
+      success: false,
+      error: 'Authentication failed'
+    });
+  }
+}
+
+// --------------------------------------------------
+// Health check
+// --------------------------------------------------
+
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    service: 'LearnHome LiveKit Server',
+    status: 'online'
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok'
+  });
+});
+
+// --------------------------------------------------
+// LiveKit token endpoint (requires authentication)
+// --------------------------------------------------
+
+app.post('/api/livekit/token', verifyAuth, async (req, res) => {
+  try {
+    const {
+      roomName,
+      identity,
+      name,
+      role = 'student'
+    } = req.body;
+
+    // Get authenticated user from middleware
+    const user = req.user;
+    const profile = req.profile;
+
+    // ----------------------------------------------
+    // Validate request
+    // ----------------------------------------------
+
+    if (!roomName) {
+      return res.status(400).json({
+        success: false,
+        error: 'roomName is required'
+      });
+    }
+
+    if (!identity) {
+      return res.status(400).json({
+        success: false,
+        error: 'identity is required'
+      });
+    }
+
+    // Ensure the requested identity matches the authenticated user
+    if (String(identity) !== String(user.id)) {
+      console.warn(
+        `⚠️ Identity mismatch: ${identity} vs ${user.id}`
+      );
+
+      return res.status(403).json({
+        success: false,
+        error: 'Cannot request token for another user'
+      });
+    }
+
+    // Ensure the room exists and user has permission to join
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('*')
+      .eq('name', roomName)
+      .single();
+
+    if (roomError && roomError.code !== 'PGRST116') {
+      console.error('❌ Room lookup error:', roomError);
+
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to verify room access'
+      });
+    }
+
+    // If room exists, verify user can access it
+    if (room) {
+      const { data: participant, error: participantError } =
+        await supabase
+          .from('room_participants')
+          .select('*')
+          .eq('room_id', room.id)
+          .eq('user_id', user.id)
+          .single();
+
+      if (
+        participantError &&
+        participantError.code !== 'PGRST116'
+      ) {
+        console.error(
+          '❌ Participant lookup error:',
+          participantError
+        );
+
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to verify room access'
+        });
+      }
+
+      if (!participant) {
+        return res.status(403).json({
+          success: false,
+          error: 'User is not a member of this room'
+        });
+      }
+    }
+
+    // Use profile role if not overridden
+    const userRole = profile?.role || role;
+
+    // ----------------------------------------------
+    // Validate LiveKit configuration
+    // ----------------------------------------------
+
+    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      console.error(
+        'LiveKit credentials are not configured'
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: 'LiveKit server is not configured'
+      });
+    }
+
+    // ----------------------------------------------
+    // Determine permissions based on user role
+    // ----------------------------------------------
+
+    const isTeacher = userRole === 'teacher';
+
+    const canPublish = true;
+    const canSubscribe = true;
+
+    // ----------------------------------------------
+    // Create LiveKit access token
+    // ----------------------------------------------
+
+    const token = new AccessToken(
+      LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET,
+      {
+        identity: String(user.id),
+        name: name ||
+          profile?.display_name ||
+          String(user.id),
+        metadata: JSON.stringify({
+          role: userRole,
+          email: profile?.email || user.email
+        }),
+        ttl: '2h'
+      }
+    );
+
+    // ----------------------------------------------
+    // Room permissions
+    // ----------------------------------------------
+
+    token.addGrant({
+      roomJoin: true,
+      room: String(roomName),
+
+      canPublish,
+      canSubscribe,
+
+      // Users can publish data (for chat, whiteboard)
+      canPublishData: true,
+
+      // Only teachers are room admins
+      roomAdmin: isTeacher
+    });
+
+    // ----------------------------------------------
+    // Generate JWT
+    // ----------------------------------------------
+
+    const jwt = await token.toJwt();
+
+    console.log(
+      `✅ LiveKit token issued for ${profile?.display_name || user.email} in room ${roomName}`
+    );
+
+    return res.json({
+      success: true,
+      token: jwt,
+      url: LIVEKIT_URL,
+      roomName,
+      identity: user.id,
+      role: userRole,
+      userId: user.id,
+      displayName: profile?.display_name || user.email
+    });
+
+  } catch (error) {
+    console.error(
+      '❌ LiveKit token error:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to create LiveKit token'
+    });
   }
 });
 
-app.post('/api/attendance', (req, res) => {
-  res.json({ success: true, checkedIn: req.body.checkedIn ?? true });
-});
+// --------------------------------------------------
+// 404 handler
+// --------------------------------------------------
 
-io.on('connection', (socket) => {
-  console.log('Socket connected:', socket.id);
-
-  socket.on('joinRoom', (roomId) => {
-    // Support payload { roomId, user } or legacy string roomId
-    const payload = typeof roomId === 'string' ? { roomId } : roomId || {};
-    const rid = payload.roomId || payload.room || roomId;
-    const user = payload.user || 'Anonymous';
-    socket.data.user = user;
-    socket.join(rid);
-    socket.to(rid).emit('participantJoined', { id: socket.id, user, time: new Date().toISOString() });
-    // Send existing whiteboard state to the newly joined socket
-    const existing = whiteboards.get(rid) || [];
-    if (existing && existing.length) {
-      socket.emit('whiteboardInit', existing);
-    }
-  });
-
-  socket.on('leaveRoom', (roomId) => {
-    const payload = typeof roomId === 'string' ? { roomId } : roomId || {};
-    const rid = payload.roomId || payload.room || roomId;
-    const user = socket.data.user || 'Anonymous';
-    socket.leave(rid);
-    socket.to(rid).emit('participantLeft', { id: socket.id, user, time: new Date().toISOString() });
-  });
-
-  socket.on('sendMessage', (message) => {
-    io.to(message.roomId).emit('receiveMessage', message);
-  });
-
-  socket.on('updateName', (payload) => {
-    const roomId = payload?.roomId;
-    const name = payload?.name || 'Anonymous';
-    socket.data.user = name;
-    if (roomId) {
-      socket.to(roomId).emit('participantUpdated', { id: socket.id, user: name });
-    }
-  });
-
-  // Simple WebRTC signaling relay: forward 'signal' messages to a specific peer or to the room
-  socket.on('signal', (payload) => {
-    try {
-      const to = payload?.to;
-      const roomId = payload?.roomId;
-      const data = payload?.data;
-      if (to) {
-        io.to(to).emit('signal', { from: socket.id, data });
-      } else if (roomId) {
-        socket.to(roomId).emit('signal', { from: socket.id, data });
-      }
-    } catch (err) {
-      console.warn('Signal relay error', err);
-    }
-  });
-
-  // Whiteboard actions: store and broadcast to room
-  socket.on('whiteboardAction', (payload) => {
-    try {
-      const roomId = payload?.roomId;
-      const action = payload?.action;
-      if (!roomId || !action) return;
-      const arr = whiteboards.get(roomId) || [];
-      arr.push(action);
-      whiteboards.set(roomId, arr);
-      // Broadcast to others in the room
-      socket.to(roomId).emit('whiteboardAction', action);
-    } catch (err) {
-      console.warn('whiteboardAction error', err);
-    }
-  });
-
-  socket.on('whiteboardClear', (payload) => {
-    try {
-      const roomId = payload?.roomId;
-      if (!roomId) return;
-      whiteboards.set(roomId, []);
-      socket.to(roomId).emit('whiteboardClear');
-    } catch (err) {
-      console.warn('whiteboardClear error', err);
-    }
-  });
-
-  // Student requests permission to enable camera/screen; teacher can approve
-  socket.on('requestMedia', (payload) => {
-    try {
-      const roomId = payload?.roomId;
-      const type = payload?.type || 'camera';
-      const user = socket.data.user || 'Anonymous';
-      if (roomId) {
-        socket.to(roomId).emit('mediaRequest', { from: socket.id, user, type });
-      }
-    } catch (err) {
-      console.warn('requestMedia error', err);
-    }
-  });
-
-  socket.on('approveMedia', (payload) => {
-    try {
-      const to = payload?.to;
-      const type = payload?.type || 'camera';
-      if (to) {
-        io.to(to).emit('mediaApproved', { from: socket.id, type });
-      }
-    } catch (err) {
-      console.warn('approveMedia error', err);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Socket disconnected:', socket.id);
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Route not found'
   });
 });
 
+// --------------------------------------------------
+// Error handler
+// --------------------------------------------------
 
-app.post('/api/payments', (req, res) => {
-  res.json({ success: true, invoiceId: `INV-${Date.now()}` });
+app.use((err, req, res, next) => {
+  console.error(
+    '❌ Server error:',
+    err
+  );
+
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error'
+  });
 });
 
-app.use(express.static(path.join(__dirname, '..', 'dist')));
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
-});
+// --------------------------------------------------
+// Start server
+// --------------------------------------------------
 
-const PORT = Number(process.env.PORT) || 4000;
-server.listen(PORT, () => {
-  console.log(`API server running on http://localhost:${PORT}`);
+app.listen(PORT, () => {
+  console.log(
+    `🚀 LearnHome LiveKit server running on port ${PORT}`
+  );
+
+  console.log(
+    `🌐 Frontend: ${FRONTEND_URL}`
+  );
+
+  if (LIVEKIT_URL) {
+    console.log(
+      `🎥 LiveKit: ${LIVEKIT_URL}`
+    );
+  } else {
+    console.log(
+      '⚠️ LiveKit URL is not configured'
+    );
+  }
 });
